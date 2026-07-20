@@ -15,30 +15,41 @@ export default async function AppLayout({
 
   if (!user) redirect('/auth/login')
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from('profiles')
     .select('*')
     .eq('id', user.id)
     .single()
 
-  // If no profile yet (first login before trigger ran), create one
-  if (!profile) {
+  // Only insert if the row genuinely doesn't exist (PGRST116 = no rows found)
+  if (!profile && profileError?.code === 'PGRST116') {
     await supabase.from('profiles').insert({
       id: user.id,
       full_name: user.user_metadata?.full_name ?? '',
       email: user.email ?? '',
-      role: user.user_metadata?.role ?? 'employee',
+      role: 'employee',
       department: user.user_metadata?.department ?? '',
     })
   }
 
-  const resolvedProfile: Profile = profile ?? {
+  // If profile still null after insert attempt, re-fetch once
+  let resolvedProfile: Profile = profile ?? {
     id: user.id,
-    full_name: '',
+    full_name: user.user_metadata?.full_name ?? '',
     email: user.email ?? '',
     role: 'employee',
     department: '',
     created_at: new Date().toISOString(),
+  }
+
+  // Re-fetch if we just inserted, to get the actual DB row (including any role set manually)
+  if (!profile) {
+    const { data: refetched } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', user.id)
+      .single()
+    if (refetched) resolvedProfile = refetched
   }
 
   return (
