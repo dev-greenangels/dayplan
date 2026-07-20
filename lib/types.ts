@@ -1,4 +1,4 @@
-export type UserRole = 'super_admin' | 'sub_admin' | 'employee'
+export type UserRole = 'pending' | 'employee' | 'sub_admin' | 'super_admin'
 
 export interface Profile {
   id: string
@@ -26,8 +26,9 @@ export interface TaskRow {
   notified: boolean
   completed: string
   notes: string
+  notify_email: boolean
+  notify_push: boolean
   created_at: string
-  // joined fields
   profile?: Profile
 }
 

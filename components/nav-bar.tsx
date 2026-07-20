@@ -9,6 +9,13 @@ interface NavBarProps {
   profile: Profile
 }
 
+const ROLE_LABEL: Record<string, string> = {
+  super_admin: 'Адмін',
+  sub_admin: 'Менеджер',
+  employee: 'Працівник',
+  pending: 'Очікує',
+}
+
 export default function NavBar({ profile }: NavBarProps) {
   const router = useRouter()
   const pathname = usePathname()
@@ -24,8 +31,7 @@ export default function NavBar({ profile }: NavBarProps) {
 
   const links = [
     { href: '/dashboard', label: 'Плани' },
-    ...(isAdmin ? [{ href: '/admin/employees', label: 'Працівники' }] : []),
-    ...(isAdmin ? [{ href: '/admin/create-plan', label: 'Новий план' }] : []),
+    ...(isAdmin ? [{ href: '/admin', label: 'Адмін панель' }] : []),
   ]
 
   return (
@@ -48,7 +54,7 @@ export default function NavBar({ profile }: NavBarProps) {
               key={link.href}
               href={link.href}
               className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                pathname.startsWith(link.href)
+                pathname === link.href || pathname.startsWith(link.href + '/')
                   ? 'bg-primary/10 text-primary'
                   : 'text-muted-foreground hover:bg-muted hover:text-foreground'
               }`}
@@ -68,9 +74,11 @@ export default function NavBar({ profile }: NavBarProps) {
               ? 'bg-primary/20 text-primary'
               : profile.role === 'sub_admin'
               ? 'bg-secondary text-secondary-foreground'
+              : profile.role === 'pending'
+              ? 'bg-yellow-100 text-yellow-700'
               : 'bg-muted text-muted-foreground'
           }`}>
-            {profile.role === 'super_admin' ? 'Адмін' : profile.role === 'sub_admin' ? 'Менеджер' : 'Працівник'}
+            {ROLE_LABEL[profile.role] ?? 'Працівник'}
           </span>
           <button
             onClick={signOut}

@@ -52,6 +52,11 @@ export default async function AppLayout({
     if (refetched) resolvedProfile = refetched
   }
 
+  // Redirect pending users — but not if they are already on /pending
+  if (resolvedProfile.role === 'pending') {
+    redirect('/pending')
+  }
+
   return (
     <div className="page-bg min-h-screen">
       <NavBar profile={resolvedProfile} />
