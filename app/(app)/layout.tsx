@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import NavBar from '@/components/nav-bar'
+import PushProvider from '@/components/push-provider'
 import type { Profile } from '@/lib/types'
 
 export default async function AppLayout({
@@ -60,6 +61,7 @@ export default async function AppLayout({
   return (
     <div className="page-bg min-h-screen">
       <NavBar profile={resolvedProfile} />
+      <PushProvider />
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
         {children}
       </main>

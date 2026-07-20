@@ -11,15 +11,17 @@ interface Props {
 }
 
 const ROLE_LABELS: Record<UserRole, string> = {
-  super_admin: 'Адмін',
-  sub_admin: 'Менеджер',
+  pending: 'Очікує',
   employee: 'Працівник',
+  sub_admin: 'Менеджер',
+  super_admin: 'Адмін',
 }
 
 const ROLE_COLORS: Record<UserRole, string> = {
-  super_admin: 'bg-primary/20 text-primary',
-  sub_admin: 'bg-secondary text-secondary-foreground',
+  pending: 'bg-amber-100 text-amber-700',
   employee: 'bg-muted text-muted-foreground',
+  sub_admin: 'bg-secondary text-secondary-foreground',
+  super_admin: 'bg-primary/20 text-primary',
 }
 
 export default function EmployeeList({ employees, currentUserId, isSuperAdmin }: Props) {
