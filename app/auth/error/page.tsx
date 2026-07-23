@@ -14,7 +14,7 @@ export default function AuthErrorPage() {
           Щось пішло не так. Спробуйте увійти ще раз.
         </p>
         <Link
-          href="/auth/login"
+          href="/login"
           className="inline-block rounded-lg bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           Повернутись до входу

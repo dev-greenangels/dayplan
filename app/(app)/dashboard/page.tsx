@@ -1,59 +1,65 @@
-import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
-import type { DayPlan, Profile, TaskRow } from '@/lib/types'
+import { requireUser, isDeputyOrBoss } from '@/lib/auth'
+import { todayISO } from '@/lib/format-date'
+import type { DayPlan, Profile, TaskRow, Team } from '@/lib/types'
 import EmployeeDashboard from './employee-dashboard'
-import AdminDashboard from './admin-dashboard'
+
+type TaskRowWithPlan = TaskRow & { day_plans: DayPlan | null }
+
+const ROW_SELECT =
+  'id, plan_id, employee_id, shift, planned, notified, completed, notes, notify_email, notify_push, created_at, plan_email_sent_at, plan_push_sent_at, extra, day_plans!inner(id, plan_date, team_id, created_by, created_at, digest_sent_at)'
 
 export default async function DashboardPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
+  const { supabase, profile, user } = await requireUser()
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', user.id)
-    .single<Profile>()
-
-  if (!profile) redirect('/auth/login')
-
-  const isAdmin = profile.role === 'super_admin' || profile.role === 'sub_admin'
-
-  if (isAdmin) {
-    const { data: plans } = await supabase
-      .from('day_plans')
-      .select('*')
-      .order('plan_date', { ascending: false })
-
-    const grouped: Record<string, DayPlan[]> = {}
-    for (const plan of plans ?? []) {
-      if (!grouped[plan.plan_date]) grouped[plan.plan_date] = []
-      grouped[plan.plan_date].push(plan)
-    }
-
-    return <AdminDashboard grouped={grouped} profile={profile} />
+  if (isDeputyOrBoss(profile.role)) {
+    redirect('/admin')
   }
 
-  // Employee: find today's task row
-  const today = new Date().toISOString().slice(0, 10)
-  const { data: taskRows } = await supabase
-    .from('task_rows')
-    .select('*, day_plans(*)')
-    .eq('employee_id', user.id)
-    .order('created_at', { ascending: false })
+  const today = todayISO()
 
-  type TaskRowWithPlan = TaskRow & { day_plans: DayPlan | null }
-  const typedRows = (taskRows ?? []) as TaskRowWithPlan[]
+  const { data: membership } = await supabase
+    .from('team_members')
+    .select('team_id, department_id, team:teams(id, name, work_mode)')
+    .eq('user_id', user.id)
+    .maybeSingle()
 
-  const todayRow = typedRows.find(r => r.day_plans?.plan_date === today) ?? null
-  const pastRows = typedRows.filter(r => r.day_plans?.plan_date !== today).slice(0, 5)
+  if (membership?.team) {
+    const team = membership.team as unknown as Pick<Team, 'id' | 'name' | 'work_mode'>
+    if (team.work_mode === 'shared') {
+      redirect(`/teams/${team.id}/plans/${today}`)
+    }
+  }
+
+  const [{ data: todayData }, { data: pastData }] = await Promise.all([
+    supabase
+      .from('task_rows')
+      .select(ROW_SELECT)
+      .eq('employee_id', user.id)
+      .eq('day_plans.plan_date', today)
+      .maybeSingle(),
+    supabase
+      .from('task_rows')
+      .select(ROW_SELECT)
+      .eq('employee_id', user.id)
+      .neq('day_plans.plan_date', today)
+      .order('created_at', { ascending: false })
+      .limit(5),
+  ])
+
+  const todayRow = (todayData as unknown as TaskRowWithPlan | null) ?? null
+  const pastRows = (pastData ?? []) as unknown as TaskRowWithPlan[]
+  const team = membership?.team as unknown as Pick<Team, 'id' | 'name' | 'work_mode'> | null
 
   return (
     <EmployeeDashboard
-      profile={profile}
+      profile={profile as Profile}
       todayRow={todayRow}
       todayPlan={todayRow?.day_plans ?? null}
       pastRows={pastRows}
+      teamName={team?.name}
+      teamId={team?.id ?? membership?.team_id}
+      workMode={team?.work_mode ?? 'individual'}
     />
   )
 }

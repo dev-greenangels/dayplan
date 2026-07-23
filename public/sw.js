@@ -1,3 +1,11 @@
+self.addEventListener('install', event => {
+  self.skipWaiting()
+})
+
+self.addEventListener('activate', event => {
+  event.waitUntil(self.clients.claim())
+})
+
 self.addEventListener('push', function (event) {
   let data = {}
   try {
@@ -9,8 +17,8 @@ self.addEventListener('push', function (event) {
   const title = data.title || 'GA-DayPlan'
   const options = {
     body: data.body || '',
-    icon: data.icon || '/icon-192.png',
-    badge: '/icon-192.png',
+    icon: data.icon || '/web-app-manifest-192x192.png',
+    badge: '/favicon-96x96.png',
     vibrate: [100, 50, 100],
     data: { url: data.url || '/' },
   }

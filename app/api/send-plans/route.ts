@@ -1,166 +1,157 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import nodemailer from 'nodemailer'
-import webpush from 'web-push'
-
-// Configure VAPID if keys are set
-if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-  webpush.setVapidDetails(
-    `mailto:${process.env.GMAIL_USER ?? 'admin@example.com'}`,
-    process.env.VAPID_PUBLIC_KEY,
-    process.env.VAPID_PRIVATE_KEY
-  )
-}
-
-function createTransporter() {
-  return nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.GMAIL_USER,
-      pass: process.env.GMAIL_APP_PASSWORD,
-    },
-  })
-}
+import { getApiSession, assertAdminApi, canManageTeam } from '@/lib/auth'
+import { isMailConfigured, sendAppMail } from '@/lib/mail'
+import { getTeamLeaderUserIds, isPushConfigured, sendPushPerUser, sendPushToUserIds } from '@/lib/push'
+import { formatUkDate } from '@/lib/format-date'
+import { escapeHtml, formatPlanDateDots } from '@/lib/email-plan-html'
 
 interface RowPayload {
   employee_id: string
   email: string
   full_name: string
   planned: string
-  notify_email: boolean
-  notify_push: boolean
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const ctx = await getApiSession()
+    if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const forbidden = assertAdminApi(ctx.profile)
+    if (forbidden) return NextResponse.json({ error: forbidden.error }, { status: forbidden.status })
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single()
-
-    if (!profile || (profile.role !== 'super_admin' && profile.role !== 'sub_admin')) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    }
-
+    const { supabase, profile } = ctx
     const body = await req.json()
-    const { date, department, rows } = body as {
+    const { date, teamId, rows, channels = 'all' } = body as {
       date: string
-      department: string
+      teamId: string
       rows: RowPayload[]
+      channels?: 'email' | 'push' | 'all'
     }
 
-    if (!date || !department || !Array.isArray(rows)) {
+    if (!date || !teamId || !Array.isArray(rows) || rows.length === 0) {
       return NextResponse.json({ error: 'Невірні параметри' }, { status: 400 })
     }
 
-    // Upsert the plan and rows first
+    const sendEmail = channels === 'email' || channels === 'all'
+    const sendPush = channels === 'push' || channels === 'all'
+
+    if (!(await canManageTeam(supabase, profile, teamId))) {
+      return NextResponse.json({ error: 'Немає доступу' }, { status: 403 })
+    }
+
+    const { data: team } = await supabase.from('teams').select('name').eq('id', teamId).single()
+
     const { data: plan } = await supabase
       .from('day_plans')
-      .upsert({ plan_date: date, department, created_by: user.id }, { onConflict: 'plan_date,department' })
-      .select()
-      .single()
+      .select('id')
+      .eq('team_id', teamId)
+      .eq('plan_date', date)
+      .maybeSingle()
 
-    if (plan) {
-      for (const row of rows) {
-        await supabase.from('task_rows').upsert(
-          {
-            plan_id: plan.id,
-            employee_id: row.employee_id,
-            planned: row.planned,
-            notify_email: row.notify_email,
-            notify_push: row.notify_push,
-            shift: '8:00-17:00',
-          },
-          { onConflict: 'plan_id,employee_id' }
-        )
-      }
+    if (!plan) {
+      return NextResponse.json({ error: 'План ще не створено' }, { status: 404 })
     }
 
-    const emailRows = rows.filter(r => r.notify_email && r.email && r.planned)
-    const pushRows = rows.filter(r => r.notify_push)
-
+    const employeeIds = rows.map(r => r.employee_id)
     let sent = 0
+    let emailSent = 0
+    let pushSent = 0
+    const sentAt = new Date().toISOString()
+    const emailedIds: string[] = []
+    const pushedIds: string[] = []
 
-    // ---- Email ----
-    if (emailRows.length > 0 && process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
-      const transporter = createTransporter()
-      const dateStr = new Date(date).toLocaleDateString('uk-UA', {
-        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-      })
+    const withEmail = rows.filter(r => r.email && r.planned?.trim())
+    if (sendEmail && withEmail.length > 0 && isMailConfigured()) {
+      const dateStr = formatUkDate(date)
+      const dateDots = formatPlanDateDots(date)
 
-      await Promise.all(
-        emailRows.map(async row => {
+      for (const row of withEmail) {
+        try {
           const html = `
             <div style="font-family: sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; background: #f0f7f0; border-radius: 12px;">
-              <h2 style="color: #2d6a4f; margin-bottom: 8px;">План на ${dateStr}</h2>
-              <p style="color: #555; margin-bottom: 16px;">Відділ: <strong>${department}</strong></p>
+              <p style="color: #333; margin: 0 0 16px; font-size: 15px; line-height: 1.45;">
+                Доброго дня! Ваше завдання на <strong>${dateDots}</strong>
+              </p>
+              <p style="color: #555; margin-bottom: 12px;">Команда: <strong>${escapeHtml(team?.name ?? '')}</strong></p>
               <div style="background: white; border-radius: 8px; padding: 16px; border-left: 4px solid #52b788;">
-                <p style="white-space: pre-wrap; color: #333; margin: 0;">${row.planned}</p>
+                <p style="white-space: pre-wrap; color: #333; margin: 0;">${escapeHtml(row.planned)}</p>
               </div>
-              <p style="margin-top: 16px; font-size: 12px; color: #999;">GA-DayPlan</p>
+              <p style="margin-top: 20px; color: #2d6a4f; font-size: 15px; font-weight: 600;">Успіхів!</p>
+              <p style="margin-top: 16px; font-size: 12px; color: #999;">GA-DayPlan · ${escapeHtml(dateStr)}</p>
             </div>
           `
-          await transporter.sendMail({
-            from: `GA-DayPlan <${process.env.GMAIL_USER}>`,
+          await sendAppMail({
             to: row.email,
-            subject: `Ваш план на ${dateStr} — ${department}`,
+            subject: `Ваше завдання на ${dateDots} — ${team?.name ?? ''}`,
             html,
           })
+          emailedIds.push(row.employee_id)
+          emailSent++
           sent++
-        })
+        } catch {
+          // continue others
+        }
+      }
+    }
+
+    if (sendPush && isPushConfigured()) {
+      const titleDate = formatUkDate(date, { weekday: false })
+      const pushed = await sendPushPerUser(
+        supabase,
+        rows.map(r => ({
+          userId: r.employee_id,
+          title: `План на ${titleDate}`,
+          body: (r.planned || 'Нове завдання').slice(0, 100),
+        }))
       )
+      pushedIds.push(...pushed)
+      pushSent += pushed.length
+      sent += pushed.length
     }
 
-    // ---- Push ----
-    if (pushRows.length > 0 && process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-      const pushEmployeeIds = pushRows.map(r => r.employee_id)
-      const { data: subs } = await supabase
-        .from('push_subscriptions')
-        .select('*')
-        .in('user_id', pushEmployeeIds)
-
-      if (subs && subs.length > 0) {
-        const dateStr = new Date(date).toLocaleDateString('uk-UA', { day: 'numeric', month: 'long' })
-        await Promise.all(
-          subs.map(async sub => {
-            const row = pushRows.find(r => r.employee_id === sub.user_id)
-            if (!row) return
-            try {
-              await webpush.sendNotification(
-                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-                JSON.stringify({
-                  title: `План на ${dateStr}`,
-                  body: row.planned.slice(0, 100),
-                  icon: '/icon-192.png',
-                })
-              )
-              sent++
-            } catch {
-              // ignore individual push failures
-            }
-          })
-        )
-      }
+    if (sendEmail && emailedIds.length > 0) {
+      await supabase
+        .from('task_rows')
+        .update({ notified: true, plan_email_sent_at: sentAt })
+        .eq('plan_id', plan.id)
+        .in('employee_id', emailedIds)
+    }
+    if (sendPush && pushedIds.length > 0) {
+      await supabase
+        .from('task_rows')
+        .update({ notified: true, plan_push_sent_at: sentAt })
+        .eq('plan_id', plan.id)
+        .in('employee_id', pushedIds)
     }
 
-    // Mark as notified in task_rows
-    if (plan) {
-      const notifiedIds = rows.filter(r => r.notify_email || r.notify_push).map(r => r.employee_id)
-      if (notifiedIds.length > 0) {
-        await supabase
-          .from('task_rows')
-          .update({ notified: true })
-          .eq('plan_id', plan.id)
-          .in('employee_id', notifiedIds)
-      }
+    if (sent > 0) {
+      const titleDate = formatUkDate(date, { weekday: false })
+      const leaderIds = await getTeamLeaderUserIds(supabase, teamId)
+      await sendPushToUserIds(supabase, leaderIds, {
+        title: `Завдання на ${titleDate}`,
+        body: `Завдання команди «${team?.name ?? ''}» відправлено працівникам`,
+      })
     }
 
-    return NextResponse.json({ success: true, sent })
+    if (sent === 0) {
+      const hint = sendEmail && !sendPush
+        ? 'Не вдалося надіслати email (немає адрес/плану або Gmail не налаштовано)'
+        : !sendEmail && sendPush
+          ? 'Немає push-підписок у вибраних'
+          : 'Нічого не надіслано'
+      return NextResponse.json({ error: hint }, { status: 400 })
+    }
+
+    return NextResponse.json({
+      success: true,
+      sent,
+      emailSent,
+      pushSent,
+      plan_email_sent_at: emailedIds.length > 0 ? sentAt : null,
+      plan_push_sent_at: pushedIds.length > 0 ? sentAt : null,
+      emailedIds,
+      pushedIds,
+    })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     return NextResponse.json({ error: message }, { status: 500 })

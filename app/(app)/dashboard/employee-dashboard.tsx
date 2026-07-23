@@ -1,7 +1,10 @@
 'use client'
 
 import { useState, useTransition, useEffect } from 'react'
-import type { DayPlan, Profile, TaskRow } from '@/lib/types'
+import type { DayPlan, Profile, TaskRow, WorkMode } from '@/lib/types'
+import { formatUkDate } from '@/lib/format-date'
+import { updateTaskRowFields } from '@/app/actions/plans'
+import Modal from '@/components/modal'
 
 type TaskRowWithPlan = TaskRow & { day_plans: DayPlan | null }
 
@@ -10,22 +13,35 @@ interface Props {
   todayRow: TaskRowWithPlan | null
   todayPlan: DayPlan | null
   pastRows: TaskRowWithPlan[]
+  teamName?: string
+  teamId?: string
+  workMode?: WorkMode
 }
 
 function formatDate(dateStr: string) {
-  return new Date(dateStr + 'T00:00:00').toLocaleDateString('uk-UA', {
-    weekday: 'long', day: 'numeric', month: 'long',
-  })
+  return formatUkDate(dateStr)
 }
 
-export default function EmployeeDashboard({ profile, todayRow, todayPlan, pastRows }: Props) {
+export default function EmployeeDashboard({
+  profile,
+  todayRow,
+  todayPlan,
+  pastRows,
+  teamName,
+  teamId,
+  workMode = 'individual',
+}: Props) {
   const today = new Date().toISOString().slice(0, 10)
   const [report, setReport] = useState(todayRow?.completed ?? '')
+  const [notes, setNotes] = useState(todayRow?.notes ?? '')
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportBusy, setReportBusy] = useState(false)
+  const [reportScope, setReportScope] = useState<'mine' | 'all'>('mine')
+  const [reportMsg, setReportMsg] = useState<string | null>(null)
 
-  // Reset saved state after animation
   useEffect(() => {
     if (saved) {
       const t = setTimeout(() => setSaved(false), 3000)
@@ -37,31 +53,77 @@ export default function EmployeeDashboard({ profile, todayRow, todayPlan, pastRo
     if (!todayRow) return
     setError(null)
     startTransition(async () => {
-      const res = await fetch('/api/send-report', {
+      const res = await updateTaskRowFields(todayRow.id, {
+        completed: report,
+        notes,
+      })
+      if (res.error) setError(res.error)
+      else setSaved(true)
+    })
+  }
+
+  async function sendLeadershipReport(scope: 'mine' | 'all') {
+    if (!teamId) return
+    setReportBusy(true)
+    setReportMsg(null)
+    try {
+      if (todayRow && report.trim()) {
+        await updateTaskRowFields(todayRow.id, { completed: report, notes })
+      }
+      const res = await fetch('/api/send-employee-leadership-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskRowId: todayRow.id, completed: report }),
+        body: JSON.stringify({ teamId, date: today, scope }),
       })
       const json = await res.json()
-      if (json.error) {
-        setError(json.error)
+      if (!res.ok || json.error) {
+        setReportMsg('Помилка: ' + (json.error || `HTTP ${res.status}`))
       } else {
+        const parts: string[] = []
+        if (json.emailSent) parts.push(`email: ${json.emailSent}`)
+        if (json.pushSent) parts.push(`push: ${json.pushSent}`)
+        setReportMsg(parts.length ? `Надіслано (${parts.join(', ')})` : 'Надіслано')
+        setReportOpen(false)
         setSaved(true)
       }
-    })
+    } catch {
+      setReportMsg('Помилка мережі')
+    }
+    setReportBusy(false)
   }
 
   return (
     <div className="mx-auto max-w-lg">
-      {/* Greeting */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">
-          Привіт, {profile.full_name || 'Працівнику'}
-        </h1>
-        <p className="mt-0.5 text-sm text-muted-foreground capitalize">{formatDate(today)}</p>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">
+            Привіт, {profile.full_name || 'Працівнику'}
+          </h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">{formatDate(today)}</p>
+          {teamName && <p className="text-xs text-muted-foreground">{teamName}</p>}
+        </div>
+        {teamId && (
+          <button
+            type="button"
+            onClick={() => setReportOpen(true)}
+            disabled={!todayRow}
+            className="tap-btn glass-send-btn inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-40"
+          >
+            Звіт керівництву
+          </button>
+        )}
       </div>
 
-      {/* Today's plan card */}
+      {(error || reportMsg) && (
+        <p className={`mb-3 rounded-lg border px-3 py-2 text-sm ${
+          (error || reportMsg || '').startsWith('Помилка')
+            ? 'border-red-200 bg-red-50 text-red-600'
+            : 'border-green-200 bg-green-50 text-green-800'
+        }`}>
+          {error || reportMsg}
+        </p>
+      )}
+
       <div className="glass-card mb-4 p-6">
         <div className="mb-4 flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
@@ -70,8 +132,9 @@ export default function EmployeeDashboard({ profile, todayRow, todayPlan, pastRo
             </svg>
           </div>
           <div>
-            <p className="font-semibold text-foreground">Мій план на сьогодні</p>
-            {todayPlan && <p className="text-xs text-muted-foreground">{todayPlan.department}</p>}
+            <p className="font-semibold text-foreground">
+              Мій план на {formatUkDate(today, { weekday: false })}
+            </p>
           </div>
         </div>
 
@@ -79,7 +142,7 @@ export default function EmployeeDashboard({ profile, todayRow, todayPlan, pastRo
           <div className="rounded-xl border border-border bg-white/40 px-4 py-3">
             {todayRow.shift && (
               <p className="mb-2 text-xs font-medium text-muted-foreground">
-                Зміна: <span className="text-foreground font-semibold">{todayRow.shift}</span>
+                Зміна: <span className="font-semibold text-foreground">{todayRow.shift}</span>
               </p>
             )}
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
@@ -88,66 +151,40 @@ export default function EmployeeDashboard({ profile, todayRow, todayPlan, pastRo
           </div>
         ) : (
           <div className="rounded-xl border border-dashed border-border bg-white/20 px-4 py-8 text-center">
-            <svg className="mx-auto mb-2 h-8 w-8 text-muted-foreground/40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2" />
-            </svg>
             <p className="text-sm text-muted-foreground">Адмін ще не склав план на сьогодні</p>
           </div>
         )}
       </div>
 
-      {/* Report card */}
       {todayRow && (
         <div className="glass-card mb-4 p-6">
-          <div className="mb-4 flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/10">
-              <svg className="h-5 w-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-            </div>
-            <p className="font-semibold text-foreground">Мій звіт за день</p>
-          </div>
-
+          <p className="mb-3 font-semibold text-foreground">Мій звіт за день</p>
           <textarea
             value={report}
             onChange={e => setReport(e.target.value)}
             placeholder="Що виконано сьогодні..."
             rows={4}
-            className="w-full resize-none rounded-xl border border-input bg-white/60 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition"
+            className="w-full resize-none rounded-xl border border-input bg-white/60 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           />
-
-          {error && (
-            <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
-          )}
+          <p className="mb-2 mt-4 text-sm font-medium text-foreground">Обробки</p>
+          <textarea
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder="Додаткові обробки (якщо були)..."
+            rows={2}
+            className="w-full resize-none rounded-xl border border-input bg-white/60 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          />
 
           <button
             onClick={handleSubmit}
             disabled={isPending || !report.trim()}
-            className="relative mt-4 w-full overflow-hidden rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground shadow shadow-primary/25 transition hover:opacity-90 hover:shadow-lg hover:shadow-primary/30 active:scale-[0.98] disabled:opacity-50"
+            className="relative mt-4 w-full overflow-hidden rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground shadow transition hover:opacity-90 disabled:opacity-50"
           >
-            {isPending ? (
-              <span className="flex items-center justify-center gap-2">
-                <svg className="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                </svg>
-                Відправка...
-              </span>
-            ) : saved ? (
-              <span className="flex items-center justify-center gap-2">
-                <svg className="h-5 w-5 animate-[scale-in_0.2s_ease-out]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                </svg>
-                Звіт збережено!
-              </span>
-            ) : (
-              'Надіслати звіт'
-            )}
+            {isPending ? 'Відправка...' : saved ? '✓ Звіт збережено!' : 'Зберегти звіт'}
           </button>
         </div>
       )}
 
-      {/* Past plans */}
       {pastRows.length > 0 && (
         <div className="glass-card p-6">
           <p className="mb-3 text-sm font-semibold text-foreground">Попередні дні</p>
@@ -155,7 +192,7 @@ export default function EmployeeDashboard({ profile, todayRow, todayPlan, pastRo
             {pastRows.map(row => (
               <div key={row.id} className="flex items-start justify-between gap-3 rounded-xl border border-border/50 bg-white/30 px-4 py-3">
                 <div className="min-w-0">
-                  <p className="text-xs font-medium text-muted-foreground capitalize">
+                  <p className="text-xs font-medium text-muted-foreground">
                     {row.day_plans?.plan_date ? formatDate(row.day_plans.plan_date) : '—'}
                   </p>
                   <p className="mt-0.5 truncate text-sm text-foreground">
@@ -172,6 +209,48 @@ export default function EmployeeDashboard({ profile, todayRow, todayPlan, pastRo
           </div>
         </div>
       )}
+
+      <Modal
+        open={reportOpen}
+        onClose={() => setReportOpen(false)}
+        title="Звіт керівництву"
+        description="Надішле email і push керівництву з полем «Виконано»"
+      >
+        <div className="flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={() => setReportScope('mine')}
+            className={`tap-btn rounded-xl border px-3 py-3 text-left text-sm ${
+              reportScope === 'mine'
+                ? 'border-primary bg-primary/10 font-semibold text-primary'
+                : 'border-border bg-white/70 text-foreground'
+            }`}
+          >
+            Тільки мій звіт (виконано)
+          </button>
+          {workMode === 'shared' && (
+            <button
+              type="button"
+              onClick={() => setReportScope('all')}
+              className={`tap-btn rounded-xl border px-3 py-3 text-left text-sm ${
+                reportScope === 'all'
+                  ? 'border-primary bg-primary/10 font-semibold text-primary'
+                  : 'border-border bg-white/70 text-foreground'
+              }`}
+            >
+              Усіх працівників (виконано) — спільний ПК
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={reportBusy}
+            onClick={() => { void sendLeadershipReport(reportScope) }}
+            className="tap-btn rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-40"
+          >
+            {reportBusy ? 'Надсилаємо…' : 'Надіслати email і push'}
+          </button>
+        </div>
+      </Modal>
     </div>
   )
 }

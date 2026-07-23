@@ -1,46 +1,68 @@
-import { createClient } from '@/lib/supabase/server'
-import { redirect } from 'next/navigation'
-import type { Profile } from '@/lib/types'
-import AdminPanel from './admin-panel'
+import { requireAdmin, getManagedTeamIds, isBoss } from '@/lib/auth'
+import { todayISO } from '@/lib/format-date'
+import AdminTeamList from './admin-team-list'
 
-export default async function AdminPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
+export default async function AdminHomePage() {
+  const { supabase, profile } = await requireAdmin()
+  const managed = await getManagedTeamIds(supabase, profile)
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', user.id)
-    .single<Profile>()
-
-  if (!profile || (profile.role !== 'super_admin' && profile.role !== 'sub_admin')) {
-    redirect('/dashboard')
+  let teamsQuery = supabase.from('teams').select('*').order('name')
+  if (managed !== 'all') {
+    teamsQuery =
+      managed.length > 0
+        ? teamsQuery.in('id', managed)
+        : teamsQuery.eq('id', '00000000-0000-0000-0000-000000000000')
   }
 
-  // Load all non-pending profiles
-  const { data: employees } = await supabase
-    .from('profiles')
-    .select('*')
-    .not('role', 'eq', 'pending')
-    .order('full_name')
+  const { data: teams } = await teamsQuery
+  const today = todayISO()
+  const teamIds = (teams ?? []).map(t => t.id)
 
-  // Load pending users (for management modal)
-  const { data: pendingUsers } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('role', 'pending')
-    .order('created_at')
+  // departments/columns still needed by team settings panel props — scoped to managed teams
+  const [membersRes, departmentsRes, columnsRes, teamAdminsRes, deputiesRes] = await Promise.all([
+    teamIds.length
+      ? supabase.from('team_members').select('team_id').in('team_id', teamIds)
+      : Promise.resolve({ data: [] as { team_id: string }[] }),
+    teamIds.length
+      ? supabase.from('departments').select('*').in('team_id', teamIds).order('sort_order')
+      : Promise.resolve({ data: [] }),
+    teamIds.length
+      ? supabase.from('team_columns').select('*').in('team_id', teamIds).order('sort_order')
+      : Promise.resolve({ data: [] }),
+    teamIds.length
+      ? supabase
+          .from('team_admins')
+          .select('team_id, user_id, hide_from_plan, can_edit_tasks')
+          .in('team_id', teamIds)
+      : Promise.resolve({ data: [] }),
+    supabase
+      .from('profiles')
+      .select('id, full_name, email, role')
+      .in('role', ['sub_admin', 'super_admin'])
+      .order('full_name'),
+  ])
 
-  // Unique departments from profiles
-  const allDepts = [...new Set((employees ?? []).map((e: Profile) => e.department).filter(Boolean))]
+  const countByTeam = new Map<string, number>()
+  for (const m of membersRes.data ?? []) {
+    countByTeam.set(m.team_id, (countByTeam.get(m.team_id) ?? 0) + 1)
+  }
+
+  const teamsWithCount = (teams ?? []).map(t => ({
+    ...t,
+    memberCount: countByTeam.get(t.id) ?? 0,
+  }))
 
   return (
-    <AdminPanel
-      currentProfile={profile}
-      employees={(employees ?? []) as Profile[]}
-      pendingUsers={(pendingUsers ?? []) as Profile[]}
-      departments={allDepts}
-    />
+    <div className="mx-auto max-w-4xl">
+      <AdminTeamList
+        teams={teamsWithCount}
+        today={today}
+        departments={departmentsRes.data ?? []}
+        columns={columnsRes.data ?? []}
+        teamAdmins={teamAdminsRes.data ?? []}
+        deputies={(deputiesRes.data ?? []) as never[]}
+        isSuperAdmin={isBoss(profile.role)}
+      />
+    </div>
   )
 }

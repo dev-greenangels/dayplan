@@ -7,31 +7,30 @@ export function usePushNotifications() {
     if (typeof window === 'undefined') return
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return
 
+    let cancelled = false
+
     async function register() {
       try {
-        // Register service worker
         const reg = await navigator.serviceWorker.register('/sw.js')
+        if (cancelled) return
 
-        // Check if already subscribed
         const existing = await reg.pushManager.getSubscription()
-        if (existing) return
+        if (existing || cancelled) return
 
-        // Get VAPID public key
         const res = await fetch('/api/vapid-public-key')
+        if (cancelled) return
         const { key } = await res.json()
-        if (!key) return
+        if (!key || cancelled) return
 
-        // Request permission
         const permission = await Notification.requestPermission()
-        if (permission !== 'granted') return
+        if (permission !== 'granted' || cancelled) return
 
-        // Subscribe
         const sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(key),
+          applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
         })
+        if (cancelled) return
 
-        // Save to server
         const subJson = sub.toJSON()
         await fetch('/api/push-subscribe', {
           method: 'POST',
@@ -43,7 +42,10 @@ export function usePushNotifications() {
       }
     }
 
-    register()
+    void register()
+    return () => {
+      cancelled = true
+    }
   }, [])
 }
 

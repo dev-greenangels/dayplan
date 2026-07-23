@@ -2,6 +2,10 @@
 
 # dependencies
 /node_modules
+.pnpm-store/
+
+# editor / local tooling
+.cursor/
 
 # next.js
 /.next/
