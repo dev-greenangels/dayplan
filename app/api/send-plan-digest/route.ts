@@ -134,7 +134,7 @@ export async function POST(req: NextRequest) {
           <div style="font-family: sans-serif; max-width: 900px; margin: 0 auto; padding: 24px;">
             <h2 style="color:#2d6a4f;">${contentTitle} — ${team?.name ?? ''} — ${dateStr}</h2>
             ${tableHtml}
-            <p style="margin-top:16px;font-size:12px;color:#999;">GA-DayPlan</p>
+            <p style="margin-top:16px;font-size:12px;color:#999;">PlanDay-GA</p>
           </div>
         `
 

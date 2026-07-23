@@ -11,10 +11,10 @@ self.addEventListener('push', function (event) {
   try {
     data = event.data ? event.data.json() : {}
   } catch {
-    data = { title: 'GA-DayPlan', body: event.data ? event.data.text() : '' }
+    data = { title: 'PlanDay-GA', body: event.data ? event.data.text() : '' }
   }
 
-  const title = data.title || 'GA-DayPlan'
+  const title = data.title || 'PlanDay-GA'
   const options = {
     body: data.body || '',
     icon: data.icon || '/web-app-manifest-192x192.png',

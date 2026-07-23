@@ -32,7 +32,7 @@
 :root {
   color-scheme: light;
   --app-header-offset: 4.5rem;
-  /* GA-DayPlan green theme */
+  /* PlanDay-GA green theme */
   --background: oklch(0.97 0.012 150);
   --foreground: oklch(0.2 0.04 155);
   --card: oklch(1 0 0 / 80%);

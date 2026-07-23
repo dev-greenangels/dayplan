@@ -1,4 +1,4 @@
-# GA-DayPlan
+# PlanDay-GA
 
 Планування робочого дня для команд Green Angels. Закритий внутрішній застосунок на Next.js + Supabase.
 

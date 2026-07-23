@@ -25,7 +25,7 @@ export async function sendAppMail(opts: {
   }
   const transporter = createMailTransporter()
   await transporter.sendMail({
-    from: `GA-DayPlan <${process.env.GMAIL_USER}>`,
+    from: `PlanDay-GA <${process.env.GMAIL_USER}>`,
     to: opts.to,
     bcc: opts.bcc,
     subject: opts.subject,

@@ -15,11 +15,11 @@ async function sendLoginInviteEmail(email: string, fullName: string) {
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
   await sendAppMail({
     to: email,
-    subject: 'Запрошення до GA-DayPlan',
+    subject: 'Запрошення до PlanDay-GA',
     html: `
       <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px;">
         <h2 style="color:#2d6a4f;">Вітаємо${fullName ? `, ${fullName}` : ''}!</h2>
-        <p>Вас додано до GA-DayPlan (плани робочого дня Green Angels).</p>
+        <p>Вас додано до PlanDay-GA (плани робочого дня Green Angels).</p>
         <p>Щоб увійти:</p>
         <ol>
           <li>Відкрийте <a href="${siteUrl}/login">${siteUrl}/login</a></li>

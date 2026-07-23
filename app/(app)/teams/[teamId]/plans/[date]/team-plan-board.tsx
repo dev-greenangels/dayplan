@@ -690,10 +690,10 @@ export default function TeamPlanBoard({
 
       <div className="glass-card hidden sm:block">
         {/* No overflow wrapper — sticky thead needs the viewport as scrollport */}
-        <table className="w-full min-w-[900px] text-sm">
+        <table className="w-full min-w-[900px] table-auto text-sm">
             <thead>
               <tr className="border-b border-border/40 text-left text-muted-foreground">
-                <th className="plan-table-sticky-th px-3 py-2.5 text-sm font-medium text-muted-foreground">
+                <th className="plan-table-sticky-th w-0 whitespace-nowrap px-3 py-2.5 text-sm font-medium text-muted-foreground">
                   Працівник
                 </th>
                 {visibleCols.map(c => (
@@ -701,9 +701,9 @@ export default function TeamPlanBoard({
                     key={c.id}
                     className={`plan-table-sticky-th px-3 py-2.5 text-sm font-medium text-muted-foreground ${
                       c.key === 'planned' || c.key === 'completed' || c.key === 'notes'
-                        ? 'min-w-[200px]'
+                        ? 'min-w-[240px] w-[28%]'
                         : c.key === 'shift'
-                          ? 'w-32 whitespace-nowrap'
+                          ? 'w-0 whitespace-nowrap'
                           : 'min-w-[140px]'
                     }`}
                   >
@@ -765,7 +765,7 @@ export default function TeamPlanBoard({
                           notLoggedIn ? 'bg-amber-50/70' : ''
                         } ${rowIdx < section.rows.length - 1 ? 'border-b border-border/55' : 'border-b border-border/25'}`}
                       >
-                        <td className="px-3 py-2">
+                        <td className="w-0 whitespace-nowrap px-3 py-2">
                           <RowIdentity
                             row={row}
                             isAdmin={isAdmin}
@@ -775,7 +775,16 @@ export default function TeamPlanBoard({
                           />
                         </td>
                         {visibleCols.map(c => (
-                          <td key={c.id} className="px-1 py-2">
+                          <td
+                            key={c.id}
+                            className={`px-1 py-2 ${
+                              c.key === 'planned' || c.key === 'completed' || c.key === 'notes'
+                                ? 'w-[28%]'
+                                : c.key === 'shift'
+                                  ? 'w-0 whitespace-nowrap'
+                                  : ''
+                            }`}
+                          >
                             <PlanField
                               col={c}
                               isAdmin={isAdmin}
@@ -1184,22 +1193,7 @@ function RowIdentity({
   removeDisabled?: boolean
 }) {
   return (
-    <div className="flex items-start justify-between gap-2">
-      <div className="min-w-0">
-        <div className="text-[15px] font-semibold leading-tight text-foreground">{row.full_name}</div>
-        {isAdmin && (
-          <div className="text-xs text-muted-foreground">{row.email}</div>
-        )}
-        {isAdmin && row.plan_email_sent_at && (
-          <div className="mt-1 flex items-center gap-1 text-[10px] font-medium text-green-700">
-            <span title="Email надіслано">✉✓</span>
-            <span>{formatUkShortDate(row.plan_email_sent_at)}</span>
-          </div>
-        )}
-        {isAdmin && notLoggedIn && (
-          <div className="mt-0.5 text-[10px] font-medium text-amber-700/90">ще не входив</div>
-        )}
-      </div>
+    <div className="flex w-max items-start gap-2">
       {onRemove && (
         <button
           type="button"
@@ -1209,10 +1203,31 @@ function RowIdentity({
           className="tap-btn shrink-0 rounded-lg bg-red-50/90 p-1.5 text-red-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-40"
         >
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+            />
           </svg>
         </button>
       )}
+      <div>
+        <div className="whitespace-nowrap text-[15px] font-semibold leading-tight text-foreground">
+          {row.full_name}
+        </div>
+        {isAdmin && (
+          <div className="whitespace-nowrap text-xs text-muted-foreground">{row.email}</div>
+        )}
+        {isAdmin && row.plan_email_sent_at && (
+          <div className="mt-1 flex items-center gap-1 whitespace-nowrap text-[10px] font-medium text-green-700">
+            <span title="Email надіслано">✉✓</span>
+            <span>{formatUkShortDate(row.plan_email_sent_at)}</span>
+          </div>
+        )}
+        {isAdmin && notLoggedIn && (
+          <div className="mt-0.5 whitespace-nowrap text-[10px] font-medium text-amber-700/90">ще не входив</div>
+        )}
+      </div>
     </div>
   )
 }
@@ -1238,6 +1253,7 @@ function PlanField({
   compact?: boolean
 }) {
   const isTextArea = col.key === 'planned' || col.key === 'completed' || col.key === 'notes' || !col.is_system
+  const isShift = col.key === 'shift'
   const fieldTone =
     col.key === 'planned'
       ? 'border-sky-300/80 bg-sky-50/70'
@@ -1247,7 +1263,7 @@ function PlanField({
           : 'border-emerald-200/80 bg-emerald-50/40'
         : 'border-input bg-white/60'
   const plannedAsText = col.key === 'planned' && !isAdmin
-  const minW = compact ? '' : 'min-w-[180px]'
+  const minW = compact || isShift ? '' : 'min-w-[180px]'
 
   if (plannedAsText) {
     return (
@@ -1268,6 +1284,20 @@ function PlanField({
           else onBlurEmployee(v)
         }}
         className={`w-full resize-none overflow-hidden rounded-[0.3rem] border px-2.5 py-2 text-[15px] leading-snug disabled:opacity-60 ${minW} ${fieldTone}`}
+      />
+    )
+  }
+
+  if (isShift) {
+    const shiftChars = Math.max(value.length, 9)
+    return (
+      <input
+        value={value}
+        disabled={!canEdit}
+        size={shiftChars}
+        onChange={e => onChange(e.target.value)}
+        onBlur={() => { if (isAdmin) onBlurAdmin() }}
+        className="w-auto max-w-none whitespace-nowrap rounded-[0.3rem] border border-input bg-white/60 px-2.5 py-2 text-[15px] disabled:opacity-60 [field-sizing:content]"
       />
     )
   }

@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
                 <p style="white-space: pre-wrap; color: #333; margin: 0;">${escapeHtml(row.planned)}</p>
               </div>
               <p style="margin-top: 20px; color: #2d6a4f; font-size: 15px; font-weight: 600;">Успіхів!</p>
-              <p style="margin-top: 16px; font-size: 12px; color: #999;">GA-DayPlan · ${escapeHtml(dateStr)}</p>
+              <p style="margin-top: 16px; font-size: 12px; color: #999;">PlanDay-GA · ${escapeHtml(dateStr)}</p>
             </div>
           `
           await sendAppMail({

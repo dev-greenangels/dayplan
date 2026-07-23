@@ -1,6 +1,6 @@
 {
-  "name": "GA-DayPlan",
-  "short_name": "DayPlan",
+  "name": "PlanDay-GA",
+  "short_name": "PlanDay-GA",
   "description": "Планування робочого дня для Green Angels",
   "start_url": "/",
   "scope": "/",

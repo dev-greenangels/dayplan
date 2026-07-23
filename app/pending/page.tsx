@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
+import BrandLogo from '@/components/brand-logo'
 
 export default function PendingPage() {
   const router = useRouter()
@@ -91,12 +92,10 @@ export default function PendingPage() {
         `}</style>
 
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary shadow-lg shadow-primary/30">
-            <svg className="h-9 w-9 text-primary-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>
+          <div className="mx-auto mb-4 flex justify-center">
+            <BrandLogo size={64} rounded="rounded-2xl" className="shadow-lg shadow-primary/30" />
           </div>
-          <h1 className="text-2xl font-bold text-foreground">GA-DayPlan</h1>
+          <h1 className="text-2xl font-bold text-foreground">PlanDay-GA</h1>
         </div>
 
         <div

@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Profile } from '@/lib/types'
 import { isDeputyOrBoss, ROLE_LABEL } from '@/lib/roles'
+import BrandLogo from '@/components/brand-logo'
 
 interface NavBarProps {
   profile: Profile
@@ -63,15 +64,8 @@ export default function NavBar({ profile }: NavBarProps) {
     >
       <div className="boty-glass mx-auto flex h-14 max-w-[1600px] items-center justify-between gap-2 rounded-lg px-4 sm:px-5">
         <Link href={isAdmin ? '/admin' : '/dashboard'} className="tap-btn flex shrink-0 items-center gap-2">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/web-app-manifest-192x192.png"
-            alt=""
-            width={32}
-            height={32}
-            className="h-8 w-8 rounded-lg object-cover shadow-sm"
-          />
-          <span className="text-sm font-semibold tracking-tight text-foreground">GA-DayPlan</span>
+          <BrandLogo size={32} />
+          <span className="text-sm font-semibold tracking-tight text-foreground">PlanDay-GA</span>
         </Link>
 
         <nav className="flex min-w-0 flex-1 items-center justify-center gap-0.5 sm:gap-1">

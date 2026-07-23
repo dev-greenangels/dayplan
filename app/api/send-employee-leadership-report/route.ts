@@ -117,7 +117,7 @@ export async function POST(req: NextRequest) {
           <h2 style="color:#2d6a4f;">Звіт керівництву — ${team.name} — ${dateStr}</h2>
           <p style="color:#555;">Від: <strong>${profile.full_name || user.email}</strong> (${scopeLabel})</p>
           ${tableHtml}
-          <p style="margin-top:16px;font-size:12px;color:#999;">GA-DayPlan</p>
+          <p style="margin-top:16px;font-size:12px;color:#999;">PlanDay-GA</p>
         </div>
       `
 

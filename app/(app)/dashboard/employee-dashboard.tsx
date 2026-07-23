@@ -5,6 +5,7 @@ import type { DayPlan, Profile, TaskRow, WorkMode } from '@/lib/types'
 import { formatUkDate } from '@/lib/format-date'
 import { updateTaskRowFields } from '@/app/actions/plans'
 import Modal from '@/components/modal'
+import BrandLogo from '@/components/brand-logo'
 
 type TaskRowWithPlan = TaskRow & { day_plans: DayPlan | null }
 
@@ -126,11 +127,7 @@ export default function EmployeeDashboard({
 
       <div className="glass-card mb-4 p-6">
         <div className="mb-4 flex items-center gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-            <svg className="h-5 w-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7l-3 3 3-3m0 0l3-3-3 3" />
-            </svg>
-          </div>
+          <BrandLogo size={40} rounded="rounded-xl" />
           <div>
             <p className="font-semibold text-foreground">
               Мій план на {formatUkDate(today, { weekday: false })}

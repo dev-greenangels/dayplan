@@ -9,14 +9,14 @@ const siteUrl =
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
-  title: 'GA-DayPlan',
+  title: 'PlanDay-GA',
   description: 'Планування робочого дня для Green Angels',
-  applicationName: 'GA-DayPlan',
+  applicationName: 'PlanDay-GA',
   robots: { index: false, follow: false },
   manifest: '/site.webmanifest',
   appleWebApp: {
     capable: true,
-    title: 'GA-DayPlan',
+    title: 'PlanDay-GA',
     statusBarStyle: 'default',
   },
   icons: {
@@ -28,9 +28,9 @@ export const metadata: Metadata = {
     apple: [{ url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
   },
   openGraph: {
-    title: 'GA-DayPlan',
+    title: 'PlanDay-GA',
     description: 'Планування робочого дня для Green Angels',
-    siteName: 'GA-DayPlan',
+    siteName: 'PlanDay-GA',
     type: 'website',
     locale: 'uk_UA',
     images: [
@@ -38,13 +38,13 @@ export const metadata: Metadata = {
         url: '/web-app-manifest-512x512.png',
         width: 512,
         height: 512,
-        alt: 'GA-DayPlan',
+        alt: 'PlanDay-GA',
       },
     ],
   },
   twitter: {
     card: 'summary',
-    title: 'GA-DayPlan',
+    title: 'PlanDay-GA',
     description: 'Планування робочого дня для Green Angels',
     images: ['/web-app-manifest-512x512.png'],
   },
