@@ -27,7 +27,7 @@ export default async function TeamPlanPage({ params }: Props) {
   const { data: team } = await supabase
     .from('teams')
     .select(
-      'id, name, work_mode, created_at, default_shift, show_send_worker_emails, show_send_leadership'
+      'id, name, work_mode, created_at, default_shift, show_send_worker_emails, show_send_leadership, plan_tasks_locked'
     )
     .eq('id', teamId)
     .single<Team>()
@@ -118,6 +118,40 @@ export default async function TeamPlanPage({ params }: Props) {
       .eq('plan_id', plan.id)
       .order('created_at')
     rows = (data ?? []) as unknown as typeof rows
+
+    // Keep plan grouping in sync with current team_members departments
+    if (isAdmin && rows.length > 0) {
+      const memberDept = new Map(
+        (membersRes.data ?? []).map(m => [m.user_id, m.department_id as string | null])
+      )
+      const deptById = new Map(
+        ((departmentsRes.data ?? []) as Department[]).map(d => [d.id, d])
+      )
+      const stale = rows.filter(r => {
+        if (!memberDept.has(r.employee_id)) return false
+        return memberDept.get(r.employee_id) !== r.department_id
+      })
+      if (stale.length > 0) {
+        await Promise.all(
+          stale.map(r =>
+            supabase
+              .from('task_rows')
+              .update({ department_id: memberDept.get(r.employee_id) ?? null })
+              .eq('id', r.id)
+          )
+        )
+        rows = rows.map(r => {
+          if (!memberDept.has(r.employee_id)) return r
+          const nextId = memberDept.get(r.employee_id) ?? null
+          if (nextId === r.department_id) return r
+          return {
+            ...r,
+            department_id: nextId,
+            department: nextId ? deptById.get(nextId) ?? null : null,
+          }
+        })
+      }
+    }
   }
 
   const nameById = new Map<string, string>()

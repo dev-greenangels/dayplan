@@ -32,6 +32,7 @@
 :root {
   color-scheme: light;
   --app-header-offset: 4.5rem;
+  --plan-month-bar-offset: 0px;
   /* PlanDay-GA green theme */
   --background: oklch(0.97 0.012 150);
   --foreground: oklch(0.2 0.04 155);
@@ -140,9 +141,14 @@
     transform: scale(0.96);
     opacity: 0.88;
   }
-  .plan-table-sticky-th {
+  .plan-month-sticky {
     position: sticky;
     top: var(--app-header-offset);
+    z-index: 30;
+  }
+  .plan-table-sticky-th {
+    position: sticky;
+    top: calc(var(--app-header-offset) + var(--plan-month-bar-offset, 0px));
     z-index: 20;
     background-color: oklch(0.97 0.015 155);
     box-shadow: 0 1px 0 0 oklch(0.86 0.02 150);

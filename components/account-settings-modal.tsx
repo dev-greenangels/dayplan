@@ -5,6 +5,7 @@ import Modal from '@/components/modal'
 import { updateMyAccountSettings } from '@/app/actions/account'
 import { usePush } from '@/components/push-provider'
 import UserAvatar from '@/components/user-avatar'
+import { useToast } from '@/components/toast-provider'
 import type { Profile } from '@/lib/types'
 import { ROLE_LABEL } from '@/lib/roles'
 
@@ -31,6 +32,7 @@ export default function AccountSettingsModal({
   const [notifyPush, setNotifyPush] = useState(profile.notify_push !== false)
   const [msg, setMsg] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const toast = useToast()
   const { status: pushStatus, error: pushError, enable: enablePush } = usePush()
 
   const showMembership =
@@ -58,7 +60,7 @@ export default function AccountSettingsModal({
         notify_push: nextPush,
       })
       if (res.error) {
-        setMsg('Помилка: ' + res.error)
+        toast.error(res.error)
         return
       }
       onUpdated?.({

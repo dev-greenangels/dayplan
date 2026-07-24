@@ -18,6 +18,7 @@ import {
 } from '@/app/actions/org'
 import ConfirmDialog from '@/components/confirm-dialog'
 import PencilEdit from '@/components/pencil-edit'
+import { useToast } from '@/components/toast-provider'
 
 interface Deputy {
   id: string
@@ -54,6 +55,7 @@ export default function TeamSettingsPanel({
   onDone,
 }: Props) {
   const router = useRouter()
+  const toast = useToast()
   const [isPending, startTransition] = useTransition()
   const [msg, setMsg] = useState<string | null>(null)
   const [name, setName] = useState(team?.name ?? '')
@@ -157,7 +159,7 @@ export default function TeamSettingsPanel({
     setMsg(null)
     startTransition(async () => {
       const res = (await fn()) as { error?: string; team?: Team }
-      if (res?.error) setMsg('Помилка: ' + res.error)
+      if (res?.error) toast.error(res.error)
       else {
         setMsg('Збережено')
         router.refresh()
@@ -471,8 +473,13 @@ export default function TeamSettingsPanel({
                           }}
                           className="accent-primary"
                         />
-                        <span className="font-medium">{d.full_name || d.email}</span>
-                        <span className="text-[10px] text-muted-foreground">({roleLabel})</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="font-medium">{d.full_name || d.email}</span>
+                          <span className="ml-1.5 text-[10px] text-muted-foreground">({roleLabel})</span>
+                          {d.full_name && d.email ? (
+                            <span className="mt-0.5 block text-[11px] text-muted-foreground">{d.email}</span>
+                          ) : null}
+                        </span>
                       </label>
                       {checked && (
                         <div className="mt-1.5 ml-6 flex flex-col gap-1.5">

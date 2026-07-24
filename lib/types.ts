@@ -28,6 +28,8 @@ export interface Team {
   default_shift?: string
   show_send_worker_emails?: boolean
   show_send_leadership?: boolean
+  /** When true, deputies cannot edit planned/shift/extra (shared for the team) */
+  plan_tasks_locked?: boolean
 }
 
 export interface Department {

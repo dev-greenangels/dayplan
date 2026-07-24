@@ -12,12 +12,14 @@ import {
   setDeputyTeams,
   setUserRole,
   updatePersonName,
+  updatePersonEmail,
   updatePersonNotifyPrefs,
 } from '@/app/actions/people'
 import ConfirmDialog from '@/components/confirm-dialog'
 import Modal from '@/components/modal'
 import PencilEdit from '@/components/pencil-edit'
 import UserAvatar, { PushStatusBell } from '@/components/user-avatar'
+import { useToast } from '@/components/toast-provider'
 import { formatUkDateTime } from '@/lib/format-date'
 
 interface Membership {
@@ -45,6 +47,14 @@ const ROLE_LABEL: Record<string, string> = {
   super_admin: 'Шеф',
 }
 
+const ROLE_FILTERS: { id: 'all' | UserRole; label: string }[] = [
+  { id: 'all', label: 'Усі' },
+  { id: 'super_admin', label: 'Шеф' },
+  { id: 'sub_admin', label: 'Заступник' },
+  { id: 'employee', label: 'Працівник' },
+  { id: 'pending', label: 'Очікує' },
+]
+
 export default function PeopleManager({
   people,
   teams,
@@ -57,8 +67,9 @@ export default function PeopleManager({
   currentUserId,
 }: Props) {
   const router = useRouter()
+  const toast = useToast()
   const [isPending, startTransition] = useTransition()
-  const [filter, setFilter] = useState<'all' | 'pending' | 'active'>('all')
+  const [roleFilter, setRoleFilter] = useState<'all' | UserRole>('all')
   const [msg, setMsg] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [toDelete, setToDelete] = useState<Profile | null>(null)
@@ -67,12 +78,12 @@ export default function PeopleManager({
   const pushActive = useMemo(() => new Set(pushActiveIds), [pushActiveIds])
 
   const filtered = useMemo(() => {
-    return people.filter(p => {
-      if (filter === 'pending') return p.role === 'pending'
-      if (filter === 'active') return p.role !== 'pending'
-      return true
-    })
-  }, [people, filter])
+    const list =
+      roleFilter === 'all' ? people : people.filter(p => p.role === roleFilter)
+    return [...list].sort((a, b) =>
+      (a.full_name || a.email).localeCompare(b.full_name || b.email, 'uk')
+    )
+  }, [people, roleFilter])
 
   const membershipByUser = useMemo(() => {
     const map = new Map<string, Membership>()
@@ -114,7 +125,7 @@ export default function PeopleManager({
     startTransition(async () => {
       const res = await fn()
       if (res.error) {
-        setMsg('Помилка: ' + res.error)
+        toast.error(res.error)
         if (res.inviteBlocked) router.refresh()
       } else if (res.warning) {
         setMsg(res.warning)
@@ -155,16 +166,19 @@ export default function PeopleManager({
         </p>
       )}
 
-      <div className="flex gap-2">
-        {(['all', 'pending', 'active'] as const).map(f => (
+      <div className="flex flex-wrap gap-2">
+        {ROLE_FILTERS.map(f => (
           <button
-            key={f}
-            onClick={() => setFilter(f)}
+            key={f.id}
+            type="button"
+            onClick={() => setRoleFilter(f.id)}
             className={`tap-btn rounded-lg px-3 py-1.5 text-xs font-medium ${
-              filter === f ? 'bg-primary text-primary-foreground' : 'border border-border bg-white/70'
+              roleFilter === f.id
+                ? 'bg-primary text-primary-foreground'
+                : 'border border-border bg-white/70'
             }`}
           >
-            {f === 'all' ? 'Усі' : f === 'pending' ? 'Очікують' : 'Активні'}
+            {f.label}
           </button>
         ))}
       </div>
@@ -197,6 +211,7 @@ export default function PeopleManager({
             }
             onSetRole={role => run(() => setUserRole(person.id, role))}
             onSaveName={name => run(() => updatePersonName(person.id, name))}
+            onSaveEmail={email => run(() => updatePersonEmail(person.id, email))}
             onSaveNotify={prefs => run(() => updatePersonNotifyPrefs(person.id, prefs))}
           />
         ))}
@@ -413,6 +428,7 @@ function PersonCard({
   onSaveDeputyTeams,
   onSetRole,
   onSaveName,
+  onSaveEmail,
   onSaveNotify,
 }: {
   person: Profile
@@ -433,6 +449,7 @@ function PersonCard({
   onSaveDeputyTeams: (teamIds: string[]) => void
   onSetRole: (role: UserRole) => void
   onSaveName: (name: string) => void
+  onSaveEmail: (email: string) => void
   onSaveNotify: (prefs: { notify_email?: boolean; notify_push?: boolean }) => void
 }) {
   const [role, setRole] = useState<UserRole>('employee')
@@ -489,7 +506,18 @@ function PersonCard({
             />
             {person.role !== 'pending' && <PushStatusBell active={pushActive} />}
           </div>
-          <p className="mt-0.5 text-xs text-muted-foreground">{person.email}</p>
+          {hasLoggedIn ? (
+            <p className="mt-0.5 text-xs text-muted-foreground">{person.email}</p>
+          ) : (
+            <div className="mt-0.5">
+              <PencilEdit
+                value={person.email || ''}
+                disabled={disabled}
+                onSave={onSaveEmail}
+                textClassName="text-xs text-muted-foreground"
+              />
+            </div>
+          )}
           <p className="mt-1 text-xs text-muted-foreground">
             {ROLE_LABEL[person.role]} · {membershipLabel}
             {!hasLoggedIn && person.role !== 'pending' && (

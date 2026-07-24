@@ -81,8 +81,8 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
         className="app-header sticky top-0 z-50 px-3 sm:px-4"
         style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}
       >
-        <div className="boty-glass mx-auto flex h-14 min-w-0 max-w-[1600px] items-center justify-between gap-2 overflow-hidden rounded-lg px-3 sm:px-5">
-          <div className="flex min-w-0 shrink items-center gap-2">
+        <div className="boty-glass mx-auto flex h-14 min-w-0 max-w-[1600px] items-center justify-between gap-1.5 overflow-hidden rounded-lg pl-3 pr-1.5 sm:gap-2 sm:px-5">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:max-w-none sm:flex-initial sm:shrink">
             <Link
               href={isAdmin ? '/admin' : '/dashboard'}
               className="tap-btn hidden shrink-0 items-center gap-2 sm:flex"
@@ -101,20 +101,22 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
             <button
               type="button"
               onClick={() => setSettingsOpen(true)}
-              className="tap-btn flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left hover:bg-black/5 sm:hidden"
+              className="tap-btn flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md px-1 py-0.5 text-left hover:bg-black/5 sm:hidden"
               title="Налаштування акаунта"
             >
-              <UserAvatar
-                url={localProfile.avatar_url}
-                name={displayName}
-                size={32}
-              />
-              <span className="flex min-w-0 flex-col">
-                <span className="truncate text-[15px] font-bold leading-tight text-foreground">
+              <span className="shrink-0">
+                <UserAvatar
+                  url={localProfile.avatar_url}
+                  name={displayName}
+                  size={32}
+                />
+              </span>
+              <span className="min-w-0 flex-1 overflow-hidden">
+                <span className="block truncate text-[15px] font-bold leading-tight text-foreground">
                   {displayName}
                 </span>
                 <span
-                  className={`truncate text-[11px] font-medium leading-tight ${
+                  className={`block truncate text-[11px] font-medium leading-tight ${
                     localProfile.role === 'super_admin' ? 'text-primary' : 'text-muted-foreground'
                   }`}
                 >
@@ -124,7 +126,7 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
             </button>
           </div>
 
-          <nav className="flex min-w-0 flex-1 items-center justify-center gap-0.5 sm:gap-1">
+          <nav className="flex shrink-0 items-center justify-center gap-0.5 sm:min-w-0 sm:flex-1 sm:gap-1">
             {links.map(link => {
               const active = isActive(pathname, link.href)
               return (
@@ -143,7 +145,7 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
             })}
           </nav>
 
-          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+          <div className="flex shrink-0 items-center gap-0 sm:gap-2">
             <button
               type="button"
               onClick={() => setSettingsOpen(true)}
@@ -178,7 +180,7 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
                   }
                   void enablePush()
                 }}
-                className={`tap-btn rounded-lg p-2.5 sm:p-2 ${
+                className={`tap-btn rounded-lg p-2 sm:p-2 ${
                   pushStatus === 'subscribed'
                     ? 'text-primary'
                     : pushStatus === 'need-permission'
@@ -209,7 +211,7 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
             )}
             <button
               onClick={signOut}
-              className="tap-btn rounded-lg p-2.5 text-muted-foreground hover:bg-black/5 hover:text-foreground sm:p-2"
+              className="tap-btn rounded-lg p-1.5 text-muted-foreground hover:bg-black/5 hover:text-foreground sm:p-2"
               title="Вийти"
             >
               <svg className="h-6 w-6 sm:h-4 sm:w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

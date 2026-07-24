@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Department, Profile, TaskRow, Team, TeamColumn } from '@/lib/types'
-import { addPlanMembers, copyPlanFromPreviousDay, deleteDayPlan, removePlanMember, saveTeamPlan, updateTaskRowFields } from '@/app/actions/plans'
+import { addPlanMembers, copyPlanFromPreviousDay, deleteDayPlan, removePlanMember, saveTeamPlan, setTeamPlanTasksLocked, updateTaskRowFields } from '@/app/actions/plans'
 import {
   daysInMonth,
   formatUkDate,
@@ -16,6 +16,7 @@ import {
 import ConfirmDialog from '@/components/confirm-dialog'
 import Modal from '@/components/modal'
 import UserAvatar, { PushStatusBell } from '@/components/user-avatar'
+import { useToast } from '@/components/toast-provider'
 
 type RowWithProfile = TaskRow & {
   profile?: Profile | null
@@ -131,6 +132,7 @@ export default function TeamPlanBoard({
   pushActiveIds,
 }: Props) {
   const router = useRouter()
+  const toast = useToast()
   const [isPending, startTransition] = useTransition()
   const [sending, setSending] = useState(false)
   const [digestSending, setDigestSending] = useState(false)
@@ -149,13 +151,17 @@ export default function TeamPlanBoard({
   })
   const [datePickerOpen, setDatePickerOpen] = useState(false)
   const [pickerMonth, setPickerMonth] = useState(date) // any day in visible month
-  const [tasksLocked, setTasksLocked] = useState(!canEditTasks)
+  const [tasksLocked, setTasksLocked] = useState(() => team.plan_tasks_locked !== false)
+  const [lockBusy, setLockBusy] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [activePlanId, setActivePlanId] = useState(planId)
   const dayStripRef = useRef<HTMLDivElement>(null)
+  const monthBarRef = useRef<HTMLDivElement>(null)
+  const monthBarSentinelRef = useRef<HTMLDivElement>(null)
   const datePickerRef = useRef<HTMLDivElement>(null)
   const dirtyRef = useRef(false)
   const [dirty, setDirty] = useState(false)
+  const [monthBarStuck, setMonthBarStuck] = useState(false)
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blurSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const localRowsRef = useRef<LocalRow[]>([])
@@ -229,8 +235,54 @@ export default function TeamPlanBoard({
   }, [team.id, date, planId, initialDigestSentAt, initialDigestReceipts])
 
   useEffect(() => {
-    if (!canEditTasks) setTasksLocked(true)
-  }, [canEditTasks])
+    setTasksLocked(team.plan_tasks_locked !== false)
+  }, [team.id, team.plan_tasks_locked])
+
+  useEffect(() => {
+    const el = monthBarRef.current
+    if (!el) return
+    const sync = () => {
+      document.documentElement.style.setProperty('--plan-month-bar-offset', `${el.offsetHeight}px`)
+    }
+    sync()
+    const ro = new ResizeObserver(sync)
+    ro.observe(el)
+    return () => {
+      ro.disconnect()
+      document.documentElement.style.removeProperty('--plan-month-bar-offset')
+    }
+  }, [])
+
+  useEffect(() => {
+    const sentinel = monthBarSentinelRef.current
+    if (!sentinel) return
+
+    let observer: IntersectionObserver | null = null
+
+    const attach = () => {
+      observer?.disconnect()
+      const raw = getComputedStyle(document.documentElement)
+        .getPropertyValue('--app-header-offset')
+        .trim()
+      const headerPx = Number.parseFloat(raw) || 0
+      observer = new IntersectionObserver(
+        ([entry]) => setMonthBarStuck(!entry.isIntersecting),
+        {
+          threshold: 0,
+          rootMargin: `-${headerPx}px 0px 0px 0px`,
+        }
+      )
+      observer.observe(sentinel)
+    }
+
+    attach()
+    const onResize = () => attach()
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      observer?.disconnect()
+    }
+  }, [])
 
   const leaders = useMemo(() => {
     return initialLeaders.map(l => ({
@@ -273,7 +325,7 @@ export default function TeamPlanBoard({
       if (!aliveRef.current) return !res.error
       if (res.error) {
         setSaveStatus('error')
-        setMsg('Помилка збереження: ' + res.error)
+        toast.error(res.error)
         return false
       }
       dirtyRef.current = false
@@ -284,7 +336,7 @@ export default function TeamPlanBoard({
     } finally {
       savingRef.current = false
     }
-  }, [isAdmin, team.id, date, rowPayload])
+  }, [isAdmin, team.id, date, rowPayload, toast])
 
   flushSaveRef.current = flushSave
 
@@ -414,7 +466,11 @@ export default function TeamPlanBoard({
     if (prev[field] === value) return
     const next = { ...prev, [field]: value }
     committedEmployeeRef.current.set(key, next)
-    await updateTaskRowFields(row.id, { [field]: value })
+    const res = await updateTaskRowFields(row.id, { [field]: value })
+    if (res.error) {
+      committedEmployeeRef.current.set(key, prev)
+      toast.error(res.error)
+    }
   }
 
   function cellValue(row: LocalRow, col: TeamColumn): string {
@@ -452,7 +508,7 @@ export default function TeamPlanBoard({
       })
       const json = await res.json()
       if (!res.ok || json.error) {
-        setMsg('Помилка: ' + (json.error || `HTTP ${res.status}`))
+        toast.error(json.error || `HTTP ${res.status}`)
       } else {
         setDigestSentAt(json.digest_sent_at ?? new Date().toISOString())
         if (json.digest_receipts) setDigestReceipts(json.digest_receipts as DigestReceipts)
@@ -464,7 +520,7 @@ export default function TeamPlanBoard({
         router.refresh()
       }
     } catch {
-      setMsg('Помилка мережі')
+      toast.error('Немає звʼязку з сервером')
     }
     setDigestSending(false)
   }
@@ -487,7 +543,7 @@ export default function TeamPlanBoard({
       })
       const json = await res.json()
       if (!res.ok || json.error) {
-        setMsg('Помилка: ' + (json.error || `HTTP ${res.status}`))
+        toast.error(json.error || `HTTP ${res.status}`)
       } else {
         const sentAt = (json.sent_at as string) || new Date().toISOString()
         setEmployeeReportSentAt(sentAt)
@@ -502,7 +558,7 @@ export default function TeamPlanBoard({
         setMsg(parts.length ? `Звіт надіслано (${parts.join(', ')})` : 'Звіт надіслано')
       }
     } catch {
-      setMsg('Помилка мережі')
+      toast.error('Немає звʼязку з сервером')
     }
     setEmployeeReportBusy(false)
   }
@@ -512,7 +568,7 @@ export default function TeamPlanBoard({
     startTransition(async () => {
       const res = await copyPlanFromPreviousDay(team.id, date)
       if (res.error) {
-        setMsg('Помилка: ' + res.error)
+        toast.error(res.error)
         return
       }
       if (res.planId) setActivePlanId(res.planId)
@@ -537,7 +593,7 @@ export default function TeamPlanBoard({
       if (row.id || activePlanId) {
         const res = await removePlanMember(team.id, date, row.employee_id)
         if (res.error) {
-          setMsg('Помилка: ' + res.error)
+          toast.error(res.error)
           return
         }
       }
@@ -566,7 +622,50 @@ export default function TeamPlanBoard({
     <div className={`mx-auto min-w-0 max-w-[1600px] ${isAdmin ? 'pb-24 sm:pb-0' : 'pb-28'}`}>
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">{team.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-foreground">{team.name}</h1>
+            {isSubAdmin && (
+              <button
+                type="button"
+                title={
+                  !canEditTasks
+                    ? 'Редагування завдань вимкнено в налаштуваннях'
+                    : tasksLocked
+                      ? 'Розблокувати редагування завдань'
+                      : 'Заблокувати редагування завдань'
+                }
+                disabled={!canEditTasks || lockBusy}
+                onClick={() => {
+                  if (!canEditTasks || lockBusy) return
+                  const next = !tasksLocked
+                  setTasksLocked(next)
+                  setLockBusy(true)
+                  void setTeamPlanTasksLocked(team.id, next).then(res => {
+                    setLockBusy(false)
+                    if (res.error) {
+                      setTasksLocked(!next)
+                      toast.error(res.error)
+                    }
+                  })
+                }}
+                className={`tap-btn rounded-lg p-1.5 ${
+                  tasksLocked || !canEditTasks
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                } disabled:opacity-60`}
+              >
+                {tasksLocked || !canEditTasks ? (
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                ) : (
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+                  </svg>
+                )}
+              </button>
+            )}
+          </div>
           {isAdmin && (
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               {saveStatus === 'saving' && 'Зберігається…'}
@@ -641,8 +740,20 @@ export default function TeamPlanBoard({
         )}
       </div>
 
-      <div className="mb-4 min-w-0 rounded-xl border border-border/50 bg-white/50 p-2">
-        <div className="mb-2 flex items-center justify-between gap-2 px-1">
+      <div
+        ref={monthBarSentinelRef}
+        className="pointer-events-none h-px w-full"
+        aria-hidden
+      />
+      <div
+        ref={monthBarRef}
+        className="plan-month-sticky -mx-3 mb-2 px-3 sm:-mx-4 sm:px-4"
+      >
+        <div
+          className={`boty-glass flex items-center justify-between gap-2 border border-border/50 px-3 py-2 transition-[border-radius] duration-150 ${
+            monthBarStuck ? 'rounded-t-none rounded-b-lg' : 'rounded-lg'
+          }`}
+        >
           <p className="min-w-0 truncate text-sm font-semibold text-foreground">Плани на {monthLabel}</p>
           <div className="relative shrink-0" ref={datePickerRef}>
             <button
@@ -736,6 +847,9 @@ export default function TeamPlanBoard({
             )}
           </div>
         </div>
+      </div>
+
+      <div className="mb-4 min-w-0 rounded-xl border border-border/50 bg-white/50 p-2">
         <div
           ref={dayStripRef}
           className="flex max-w-full gap-1 overflow-x-auto overscroll-x-contain pb-1 scroll-smooth [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -816,35 +930,6 @@ export default function TeamPlanBoard({
                     <span className="inline-flex items-center gap-1.5">
                       {COL_ICONS[c.key] ? <span>{COL_ICONS[c.key]}</span> : null}
                       {c.label}
-                      {c.key === 'planned' && isSubAdmin && (
-                        <button
-                          type="button"
-                          title={
-                            !canEditTasks
-                              ? 'Редагування завдань вимкнено в налаштуваннях'
-                              : tasksLocked
-                                ? 'Розблокувати редагування завдань'
-                                : 'Заблокувати редагування завдань'
-                          }
-                          disabled={!canEditTasks}
-                          onClick={() => setTasksLocked(v => !v)}
-                          className={`tap-btn rounded-md p-1 ${
-                            tasksLocked || !canEditTasks
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                          } disabled:opacity-60`}
-                        >
-                          {tasksLocked || !canEditTasks ? (
-                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                            </svg>
-                          ) : (
-                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
-                            </svg>
-                          )}
-                        </button>
-                      )}
                     </span>
                   </th>
                 ))}
@@ -868,15 +953,15 @@ export default function TeamPlanBoard({
                       <tr
                         key={row.employee_id}
                         className={`align-top ${style.row} ${
-                          notLoggedIn ? 'bg-amber-50/70' : ''
+                          notLoggedIn && allowEditTasks ? 'bg-amber-50/70' : ''
                         } ${rowIdx < section.rows.length - 1 ? 'border-b border-border/55' : 'border-b border-border/25'}`}
                       >
                         <td className="w-0 whitespace-nowrap px-3 py-2">
                           <RowIdentity
                             row={row}
                             isAdmin={isAdmin}
-                            notLoggedIn={notLoggedIn}
-                            onRemove={isAdmin ? () => removeEmployeeFromPlan(row) : undefined}
+                            notLoggedIn={notLoggedIn && allowEditTasks}
+                            onRemove={isAdmin && allowEditTasks ? () => removeEmployeeFromPlan(row) : undefined}
                             removeDisabled={isPending}
                           />
                         </td>
@@ -939,20 +1024,19 @@ export default function TeamPlanBoard({
                 </div>
                 {section.rows.map((row, rowIdx) => {
                   const notLoggedIn = isAdmin && !loggedIn.has(row.employee_id)
-                  const showLockOnPlanned = isSubAdmin && sectionIdx === 0 && rowIdx === 0
                   return (
                     <div
                       key={row.employee_id}
                       className={`rounded-xl border border-black/10 bg-white/90 px-3.5 py-3.5 shadow-sm ${
-                        notLoggedIn ? 'border-amber-300/70 bg-amber-50/90' : ''
+                        notLoggedIn && allowEditTasks ? 'border-amber-300/70 bg-amber-50/90' : ''
                       }`}
                     >
                       <div className={`mb-3 -mx-1 rounded-lg px-2.5 py-2 ${style.identity}`}>
                         <RowIdentity
                           row={row}
                           isAdmin={isAdmin}
-                          notLoggedIn={notLoggedIn}
-                          onRemove={isAdmin ? () => removeEmployeeFromPlan(row) : undefined}
+                          notLoggedIn={notLoggedIn && allowEditTasks}
+                          onRemove={isAdmin && allowEditTasks ? () => removeEmployeeFromPlan(row) : undefined}
                           removeDisabled={isPending}
                         />
                       </div>
@@ -988,35 +1072,6 @@ export default function TeamPlanBoard({
                             <label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-foreground/70">
                               {COL_ICONS[c.key] ? <span className="normal-case">{COL_ICONS[c.key]}</span> : null}
                               {c.label}
-                              {c.key === 'planned' && showLockOnPlanned && (
-                                <button
-                                  type="button"
-                                  title={
-                                    !canEditTasks
-                                      ? 'Редагування завдань вимкнено в налаштуваннях'
-                                      : tasksLocked
-                                        ? 'Розблокувати редагування завдань'
-                                        : 'Заблокувати редагування завдань'
-                                  }
-                                  disabled={!canEditTasks}
-                                  onClick={() => setTasksLocked(v => !v)}
-                                  className={`tap-btn rounded-md p-1 normal-case ${
-                                    tasksLocked || !canEditTasks
-                                      ? 'bg-amber-100 text-amber-800'
-                                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                                  } disabled:opacity-60`}
-                                >
-                                  {tasksLocked || !canEditTasks ? (
-                                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                                    </svg>
-                                  ) : (
-                                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
-                                    </svg>
-                                  )}
-                                </button>
-                              )}
                             </label>
                             <PlanField
                               col={c}
@@ -1057,7 +1112,7 @@ export default function TeamPlanBoard({
             const res = await addPlanMembers(team.id, date, ids)
             setAddOpen(false)
             if (res.error) {
-              setMsg('Помилка: ' + res.error)
+              toast.error(res.error)
               return
             }
             if (res.planId) setActivePlanId(res.planId)
@@ -1118,7 +1173,7 @@ export default function TeamPlanBoard({
               }),
             })
             const json = await res.json()
-            if (json.error) setMsg('Помилка: ' + json.error)
+            if (json.error) toast.error(json.error)
             else {
               const emailStamp = json.plan_email_sent_at as string | null | undefined
               const pushStamp = json.plan_push_sent_at as string | null | undefined
@@ -1141,7 +1196,7 @@ export default function TeamPlanBoard({
               router.refresh()
             }
           } catch {
-            setMsg('Помилка мережі')
+            toast.error('Немає звʼязку з сервером')
           }
           setSending(false)
         }}
@@ -1167,7 +1222,7 @@ export default function TeamPlanBoard({
           startTransition(async () => {
             const res = await deleteDayPlan(team.id, date)
             setDeleteOpen(false)
-            if (res.error) setMsg('Помилка: ' + res.error)
+            if (res.error) toast.error(res.error)
             else {
               setMsg('План видалено')
               router.push('/admin')
@@ -1395,8 +1450,16 @@ function PlanField({
 }) {
   const isTextArea = col.key === 'planned' || col.key === 'completed' || col.key === 'notes' || !col.is_system
   const isShift = col.key === 'shift'
-  const fieldTone =
-    col.key === 'planned'
+  const lockedLook = !canEdit
+  const fieldTone = lockedLook
+    ? col.key === 'planned'
+      ? 'border-sky-200/70 bg-sky-50/50 text-foreground shadow-none'
+      : col.key === 'completed'
+        ? value.trim()
+          ? 'border-emerald-200/70 bg-emerald-50/60 text-emerald-900 shadow-none'
+          : 'border-emerald-100 bg-emerald-50/40 text-foreground shadow-none'
+        : 'border-border/40 bg-muted/20 text-foreground shadow-none'
+    : col.key === 'planned'
       ? 'border-sky-400/90 bg-sky-50 shadow-[0_1px_2px_rgba(15,23,42,0.06),inset_0_0_0_1px_rgba(56,189,248,0.12)]'
       : col.key === 'completed'
         ? value.trim()
@@ -1405,11 +1468,11 @@ function PlanField({
         : 'border-border bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
   const plannedAsText = col.key === 'planned' && !isAdmin
   const minW = compact || isShift ? '' : 'min-w-[180px]'
-  const fieldShadow = 'shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
+  const fieldShadow = lockedLook ? 'shadow-none' : 'shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
 
   if (plannedAsText) {
     return (
-      <div className={`min-h-[40px] w-full whitespace-pre-wrap rounded-md border border-sky-300 bg-sky-50/80 px-2.5 py-2 text-base leading-snug text-foreground ${fieldShadow} ${minW}`}>
+      <div className={`min-h-[40px] w-full whitespace-pre-wrap rounded-md border border-sky-200/70 bg-sky-50/50 px-2.5 py-2 text-base leading-snug text-foreground ${minW}`}>
         {value.trim() || '—'}
       </div>
     )
@@ -1425,17 +1488,28 @@ function PlanField({
           if (isAdmin) onBlurAdmin()
           else onBlurEmployee(v)
         }}
-        className={`w-full resize-none overflow-hidden rounded-md border px-2.5 py-2 text-base leading-snug disabled:opacity-60 ${minW} ${fieldTone}`}
+        className={`w-full resize-none overflow-hidden rounded-md border px-2.5 py-2 text-base leading-snug disabled:cursor-not-allowed disabled:opacity-100 ${minW} ${fieldTone}`}
       />
     )
   }
 
   if (isShift) {
     if (!isAdmin || !canEdit) {
+      if (!isAdmin) {
+        return (
+          <span className="inline-block whitespace-nowrap text-base font-semibold leading-snug text-foreground">
+            {value.trim() || '—'}
+          </span>
+        )
+      }
       return (
-        <span className="inline-block whitespace-nowrap text-base font-semibold leading-snug text-foreground">
-          {value.trim() || '—'}
-        </span>
+        <input
+          value={value}
+          disabled
+          size={Math.max(value.length, 9)}
+          readOnly
+          className={`w-auto max-w-none cursor-not-allowed whitespace-nowrap rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5 text-base font-medium text-foreground [field-sizing:content] ${fieldShadow}`}
+        />
       )
     }
     const shiftChars = Math.max(value.length, 9)
@@ -1446,7 +1520,7 @@ function PlanField({
         size={shiftChars}
         onChange={e => onChange(e.target.value)}
         onBlur={() => { if (isAdmin) onBlurAdmin() }}
-        className={`w-auto max-w-none whitespace-nowrap rounded-md border border-border bg-white px-2.5 py-1.5 text-base font-medium disabled:opacity-60 [field-sizing:content] ${fieldShadow}`}
+        className={`w-auto max-w-none whitespace-nowrap rounded-md border border-border bg-white px-2.5 py-1.5 text-base font-medium disabled:cursor-not-allowed disabled:opacity-100 [field-sizing:content] ${fieldShadow}`}
       />
     )
   }
@@ -1457,7 +1531,7 @@ function PlanField({
       disabled={!canEdit}
       onChange={e => onChange(e.target.value)}
       onBlur={() => { if (isAdmin) onBlurAdmin() }}
-      className={`w-full rounded-md border border-border bg-white px-2.5 py-2 text-base disabled:opacity-60 ${fieldShadow} ${minW}`}
+      className={`w-full rounded-md border px-2.5 py-2 text-base disabled:cursor-not-allowed disabled:opacity-100 ${fieldTone} ${minW}`}
     />
   )
 }

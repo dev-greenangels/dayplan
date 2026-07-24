@@ -13,20 +13,33 @@ async function sendLoginInviteEmail(email: string, fullName: string) {
     return { error: 'Gmail не налаштовано' }
   }
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'
+  const loginUrl = `${siteUrl.replace(/\/$/, '')}/login`
+  const greeting = fullName ? `Вітаємо, ${fullName}!` : 'Вітаємо!'
   await sendAppMail({
     to: email,
     subject: 'Запрошення до PlanDay-GA',
     html: `
-      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px;">
-        <h2 style="color:#2d6a4f;">Вітаємо${fullName ? `, ${fullName}` : ''}!</h2>
-        <p>Вас додано до PlanDay-GA (плани робочого дня Green Angels).</p>
-        <p>Щоб увійти:</p>
-        <ol>
-          <li>Відкрийте <a href="${siteUrl}/login">${siteUrl}/login</a></li>
-          <li>Введіть цей email</li>
-          <li>Натисніть «Отримати код» і введіть код з листа</li>
-        </ol>
-        <p style="color:#888;font-size:12px;">Або увійдіть через Google тим самим email.</p>
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#f0f7f0;border-radius:12px;">
+        <h2 style="color:#2d6a4f;margin:0 0 12px;">${greeting}</h2>
+        <p style="color:#333;font-size:15px;line-height:1.5;margin:0 0 12px;">
+          Вас запрошено до додатку <strong>PlanDay-GA</strong> (Green Angels).
+        </p>
+        <p style="color:#333;font-size:15px;line-height:1.5;margin:0 0 12px;">
+          Зайдіть за посиланням і авторизуйтесь своїм email — там будуть плани робіт і звітування.
+        </p>
+        <p style="margin:20px 0;">
+          <a href="${loginUrl}"
+             style="display:inline-block;background:#2d6a4f;color:#fff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:600;">
+            Відкрити додаток
+          </a>
+        </p>
+        <p style="color:#555;font-size:13px;line-height:1.45;margin:0 0 8px;">
+          Або скопіюйте посилання: <a href="${loginUrl}" style="color:#2d6a4f;">${loginUrl}</a>
+        </p>
+        <p style="color:#555;font-size:13px;line-height:1.45;margin:0 0 8px;">
+          Увійдіть через Google цим самим email або введіть email і отримайте код у листі.
+        </p>
+        <p style="margin-top:20px;font-size:12px;color:#999;">PlanDay-GA · Green Angels</p>
       </div>
     `,
   })
@@ -346,6 +359,47 @@ export async function updatePersonName(userId: string, fullName: string) {
   return { success: true }
 }
 
+/** Change email only before the user has ever signed in (Auth + profiles). */
+export async function updatePersonEmail(userId: string, email: string) {
+  await requireAdmin()
+  const trimmed = email.trim().toLowerCase()
+  if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    return { error: 'Невірний email' }
+  }
+
+  try {
+    const admin = createAdminClient()
+    const { data: authData, error: getErr } = await admin.auth.admin.getUserById(userId)
+    if (getErr || !authData.user) return { error: getErr?.message || 'Користувача не знайдено' }
+    if (authData.user.last_sign_in_at) {
+      return { error: 'Email можна змінити лише до першого входу' }
+    }
+
+    const { data: clash } = await admin
+      .from('profiles')
+      .select('id')
+      .eq('email', trimmed)
+      .neq('id', userId)
+      .maybeSingle()
+    if (clash) return { error: 'Цей email уже зайнятий' }
+
+    const { error: authErr } = await admin.auth.admin.updateUserById(userId, {
+      email: trimmed,
+      email_confirm: true,
+    })
+    if (authErr) return { error: authErr.message }
+
+    const { error } = await admin.from('profiles').update({ email: trimmed }).eq('id', userId)
+    if (error) return { error: error.message }
+
+    revalidatePath('/admin/people')
+    return { success: true }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Не вдалося змінити email'
+    return { error: message }
+  }
+}
+
 export async function updatePersonNotifyPrefs(
   userId: string,
   prefs: { notify_email?: boolean; notify_push?: boolean }
@@ -418,7 +472,30 @@ export async function movePerson(opts: {
     department_id: opts.departmentId,
   })
   if (error) return { error: error.message }
+
+  // Plan rows keep a department snapshot — sync today+ for this team so the board matches «Люди»
+  const today = new Date().toISOString().slice(0, 10)
+  const { data: plans } = await supabase
+    .from('day_plans')
+    .select('id, plan_date')
+    .eq('team_id', opts.teamId)
+    .gte('plan_date', today)
+
+  if (plans && plans.length > 0) {
+    const planIds = plans.map(p => p.id)
+    await supabase
+      .from('task_rows')
+      .update({ department_id: opts.departmentId })
+      .eq('employee_id', opts.userId)
+      .in('plan_id', planIds)
+
+    for (const p of plans) {
+      revalidatePath(`/teams/${opts.teamId}/plans/${p.plan_date}`)
+    }
+  }
+
   revalidatePath('/admin/people')
+  revalidatePath('/admin')
   return { success: true }
 }
 

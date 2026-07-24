@@ -1,7 +1,25 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAdmin, requireUser, canManageTeam, canEditTeamTasks } from '@/lib/auth'
+import { requireAdmin, requireUser, canManageTeam, canEditTeamTasks, isBoss } from '@/lib/auth'
+import type { Profile } from '@/lib/types'
+import type { createClient } from '@/lib/supabase/server'
+
+/** Boss always; deputy only if can_edit_tasks and team plan is unlocked. */
+async function allowEditingPlanTasks(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  profile: Profile,
+  teamId: string
+): Promise<boolean> {
+  if (isBoss(profile.role)) return true
+  if (!(await canEditTeamTasks(supabase, profile, teamId))) return false
+  const { data } = await supabase
+    .from('teams')
+    .select('plan_tasks_locked')
+    .eq('id', teamId)
+    .maybeSingle()
+  return data?.plan_tasks_locked === false
+}
 
 export interface PlanRowInput {
   employee_id: string
@@ -115,13 +133,13 @@ export async function saveTeamPlan(teamId: string, date: string, rows: PlanRowIn
     return { error: 'Немає доступу' }
   }
 
-  const allowEditTasks = await canEditTeamTasks(supabase, profile, teamId)
+  const allowEditTasks = await allowEditingPlanTasks(supabase, profile, teamId)
 
   const ensured = await ensureDayPlan(teamId, date, ctx)
   if (ensured.error || !ensured.plan) return { error: ensured.error ?? 'Немає плану' }
   const plan = ensured.plan
 
-  // If deputy cannot edit tasks, preserve existing planned/shift from DB
+  // If tasks locked / deputy cannot edit, preserve existing planned/shift from DB
   let existingByEmployee = new Map<string, { planned: string; shift: string; extra: Record<string, string> }>()
   if (!allowEditTasks) {
     const { data: existing } = await supabase
@@ -201,7 +219,15 @@ export async function updateTaskRowFields(
     const { error } = await supabase.from('task_rows').update(allowed).eq('id', rowId)
     if (error) return { error: error.message }
   } else {
-    const { error } = await supabase.from('task_rows').update(fields).eq('id', rowId)
+    const allowEditTasks = await allowEditingPlanTasks(supabase, profile, teamId)
+    const patch: Record<string, unknown> = { ...fields }
+    if (!allowEditTasks) {
+      delete patch.planned
+      delete patch.shift
+      delete patch.extra
+    }
+    if (Object.keys(patch).length === 0) return { success: true }
+    const { error } = await supabase.from('task_rows').update(patch).eq('id', rowId)
     if (error) return { error: error.message }
   }
 
@@ -414,6 +440,27 @@ export async function deleteDayPlan(teamId: string, date: string) {
   if (error) return { error: error.message }
 
   revalidatePath(`/teams/${teamId}/plans/${date}`)
+  revalidatePath('/admin')
+  return { success: true }
+}
+
+/** Shared lock for planned/shift/extra — same for all deputies and devices. */
+export async function setTeamPlanTasksLocked(teamId: string, locked: boolean) {
+  const { supabase, profile } = await requireAdmin()
+  if (!(await canManageTeam(supabase, profile, teamId))) {
+    return { error: 'Немає доступу' }
+  }
+  if (!(await canEditTeamTasks(supabase, profile, teamId))) {
+    return { error: 'Редагування завдань вимкнено в налаштуваннях' }
+  }
+
+  const { error } = await supabase
+    .from('teams')
+    .update({ plan_tasks_locked: locked })
+    .eq('id', teamId)
+
+  if (error) return { error: error.message }
+  revalidatePath(`/teams/${teamId}`, 'layout')
   revalidatePath('/admin')
   return { success: true }
 }
