@@ -1,13 +1,15 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
-import startupImages from '../public/splash/startup-images.json'
 import LaunchSplash from '@/components/launch-splash'
+import AppleStartupLinks from '@/components/apple-startup-links'
 
 const inter = Inter({ subsets: ['latin', 'cyrillic'] })
 
 const siteUrl =
   process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, '') || 'http://localhost:3000'
+
+const launchBg = 'linear-gradient(135deg, #d4edda 0%, #e8f5e9 40%, #c8e6c9 100%)'
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
@@ -19,8 +21,8 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     title: 'PlanDay-GA',
-    statusBarStyle: 'default',
-    startupImage: startupImages,
+    // black-translucent helps launch chrome blend with splash on newer iOS
+    statusBarStyle: 'black-translucent',
   },
   icons: {
     icon: [
@@ -51,11 +53,14 @@ export const metadata: Metadata = {
     description: 'Планування робочого дня для Green Angels',
     images: ['/web-app-manifest-512x512.png'],
   },
+  other: {
+    'mobile-web-app-capable': 'yes',
+  },
 }
 
 export const viewport: Viewport = {
   colorScheme: 'light',
-  themeColor: '#4a7c59',
+  themeColor: '#e8f5e9',
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
@@ -74,14 +79,15 @@ export default function RootLayout({
       className="bg-background"
       style={{
         fontFamily: inter.style.fontFamily,
-        background: 'linear-gradient(135deg, #d4edda 0%, #e8f5e9 40%, #c8e6c9 100%)',
+        background: launchBg,
       }}
     >
+      <head>
+        <AppleStartupLinks />
+      </head>
       <body
         className="antialiased font-sans"
-        style={{
-          background: 'linear-gradient(135deg, #d4edda 0%, #e8f5e9 40%, #c8e6c9 100%)',
-        }}
+        style={{ background: launchBg }}
       >
         <LaunchSplash />
         {children}
