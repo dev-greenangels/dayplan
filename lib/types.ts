@@ -79,6 +79,8 @@ export interface TaskRow {
   notify_push: boolean
   plan_email_sent_at?: string | null
   plan_push_sent_at?: string | null
+  /** When employee sent «Звіт керівництву» for this row/day */
+  report_sent_at?: string | null
   extra: Record<string, string>
   created_at: string
   profile?: Profile

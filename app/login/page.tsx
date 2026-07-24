@@ -56,18 +56,29 @@ export default function LoginPage() {
     setLoading(true)
     setError(null)
     const supabase = createClient()
-    const { error } = await supabase.auth.verifyOtp({
-      email: email.trim(),
-      token,
-      type: 'email',
-    })
-    if (error) {
-      setError(error.message)
-      setLoading(false)
-      return
+    // Drop stale cookies first — dead refresh token causes "Failed to fetch" on verifyOtp
+    try {
+      await supabase.auth.signOut({ scope: 'local' })
+    } catch {
+      /* ignore */
     }
-    router.push('/dashboard')
-    router.refresh()
+    try {
+      const { error } = await supabase.auth.verifyOtp({
+        email: email.trim(),
+        token,
+        type: 'email',
+      })
+      if (error) {
+        setError(error.message)
+        setLoading(false)
+        return
+      }
+      router.push('/dashboard')
+      router.refresh()
+    } catch {
+      setError('Не вдалося перевірити код (мережа або застаріла сесія). Оновіть сторінку і спробуйте ще раз.')
+      setLoading(false)
+    }
   }
 
   async function handleGoogle() {

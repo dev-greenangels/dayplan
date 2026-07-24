@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase/client'
 import type { Profile } from '@/lib/types'
 import { isDeputyOrBoss, ROLE_LABEL } from '@/lib/roles'
 import BrandLogo from '@/components/brand-logo'
+import { usePush } from '@/components/push-provider'
 
 interface NavBarProps {
   profile: Profile
@@ -30,6 +31,7 @@ export default function NavBar({ profile }: NavBarProps) {
   const router = useRouter()
   const pathname = usePathname()
   const headerRef = useRef<HTMLElement>(null)
+  const { status: pushStatus, error: pushError, enable: enablePush } = usePush()
 
   useEffect(() => {
     const el = headerRef.current
@@ -125,6 +127,47 @@ export default function NavBar({ profile }: NavBarProps) {
           }`}>
             {ROLE_LABEL[profile.role] ?? 'Працівник'}
           </span>
+          {pushStatus !== 'unsupported' && pushStatus !== 'loading' && (
+            <button
+              type="button"
+              onClick={() => {
+                if (pushStatus === 'subscribed' || pushStatus === 'denied' || pushStatus === 'unavailable') return
+                void enablePush()
+              }}
+              disabled={pushStatus === 'subscribed' || pushStatus === 'denied' || pushStatus === 'unavailable'}
+              className={`tap-btn rounded-lg p-2.5 sm:p-2 ${
+                pushStatus === 'subscribed'
+                  ? 'text-primary'
+                  : pushStatus === 'need-permission'
+                    ? 'text-amber-700 hover:bg-amber-500/10'
+                    : 'text-muted-foreground'
+              }`}
+              title={
+                pushStatus === 'subscribed'
+                  ? 'Push-сповіщення увімкнено'
+                  : pushStatus === 'denied'
+                    ? (pushError ?? 'Дозвіл на сповіщення заблоковано в браузері')
+                    : pushStatus === 'unavailable'
+                      ? (pushError ?? 'Push не налаштовано на сервері')
+                      : 'Увімкнути push-сповіщення'
+              }
+              aria-label={
+                pushStatus === 'subscribed'
+                  ? 'Push увімкнено'
+                  : 'Увімкнути push-сповіщення'
+              }
+            >
+              {pushStatus === 'subscribed' ? (
+                <svg className="h-6 w-6 sm:h-4 sm:w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden>
+                  <path d="M12 22c1.1 0 2-.9 2-2h-4a2 2 0 002 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
+                </svg>
+              ) : (
+                <svg className="h-6 w-6 sm:h-4 sm:w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.4-1.4A2 2 0 0118 14.2V11a6 6 0 00-4-5.66V5a2 2 0 10-4 0v.34A6 6 0 006 11v3.2c0 .53-.21 1.04-.59 1.41L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                </svg>
+              )}
+            </button>
+          )}
           <button
             onClick={signOut}
             className="tap-btn rounded-lg p-2.5 text-muted-foreground hover:bg-black/5 hover:text-foreground sm:p-2"

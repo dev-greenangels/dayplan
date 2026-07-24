@@ -29,23 +29,55 @@ async function loadProfiles(
   return []
 }
 
-/** Backfill invite_blocked for people who already signed in but flag is still false. */
-async function syncInviteBlocked(people: Profile[]): Promise<Profile[]> {
-  const needBlock = people.filter(p => p.last_sign_in_at && !p.invite_blocked)
-  if (needBlock.length === 0) {
-    return people.map(p => ({
-      ...p,
-      invite_blocked: !!(p.invite_blocked || p.last_sign_in_at),
-    }))
-  }
+/**
+ * Pull real last_sign_in_at from Auth for everyone on the page (boss + deputy + employee).
+ * Profiles cache can lag; Auth is source of truth.
+ */
+async function syncSignInFlags(people: Profile[]): Promise<Profile[]> {
+  let next = people.map(p => ({ ...p }))
+
   try {
     const admin = createAdminClient()
-    const ids = needBlock.map(p => p.id)
-    await admin.from('profiles').update({ invite_blocked: true }).in('id', ids)
+    const authSignIn = new Map<string, string>()
+
+    // Paginate Auth users (covers boss/deputy who often use Google)
+    for (let page = 1; page <= 10; page++) {
+      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 })
+      if (error) {
+        console.warn('[people] listUsers failed', error.message)
+        break
+      }
+      for (const u of data.users) {
+        if (u.last_sign_in_at) authSignIn.set(u.id, u.last_sign_in_at)
+      }
+      if (data.users.length < 200) break
+    }
+
+    const toPersist: { id: string; last_sign_in_at: string }[] = []
+    next = next.map(p => {
+      const at = authSignIn.get(p.id) || p.last_sign_in_at || null
+      if (at && at !== p.last_sign_in_at) {
+        toPersist.push({ id: p.id, last_sign_in_at: at })
+      }
+      if (!at) return p
+      return { ...p, last_sign_in_at: at, invite_blocked: true }
+    })
+
+    if (toPersist.length > 0) {
+      await Promise.all(
+        toPersist.map(u =>
+          admin
+            .from('profiles')
+            .update({ last_sign_in_at: u.last_sign_in_at, invite_blocked: true })
+            .eq('id', u.id)
+        )
+      )
+    }
   } catch (e) {
-    console.warn('[people] invite_blocked backfill skipped', e)
+    console.warn('[people] sign-in sync skipped', e)
   }
-  return people.map(p => ({
+
+  return next.map(p => ({
     ...p,
     invite_blocked: !!(p.invite_blocked || p.last_sign_in_at),
   }))
@@ -89,29 +121,40 @@ export default async function PeoplePage() {
   const members = membersRes.data ?? []
   const memberIds = new Set(members.map(m => m.user_id))
   memberIds.add(profile.id)
+  // Deputies also appear in team_admins — include them in the list
+  for (const a of adminshipsRes.data ?? []) memberIds.add(a.user_id)
 
   let filteredPeople: Profile[]
 
-  if (isBoss(profile.role)) {
-    try {
-      filteredPeople = await loadProfiles(createAdminClient())
-    } catch (e) {
-      console.error('[people] admin client failed, falling back to session client', e)
-      filteredPeople = await loadProfiles(supabase)
+  // Always load profiles via service role so boss AND deputy see the same invite/sign-in fields
+  try {
+    const admin = createAdminClient()
+    if (isBoss(profile.role)) {
+      filteredPeople = await loadProfiles(admin)
+    } else {
+      const all = await loadProfiles(admin)
+      filteredPeople = all.filter(p => p.role === 'pending' || memberIds.has(p.id))
     }
-  } else {
-    const [pending, scoped] = await Promise.all([
-      loadProfiles(supabase, { role: 'pending' }),
-      memberIds.size > 0 ? loadProfiles(supabase, { ids: [...memberIds] }) : Promise.resolve([] as Profile[]),
-    ])
-    const byId = new Map<string, Profile>()
-    for (const p of [...pending, ...scoped]) byId.set(p.id, p)
-    filteredPeople = [...byId.values()]
+  } catch (e) {
+    console.error('[people] admin client failed, falling back to session client', e)
+    if (isBoss(profile.role)) {
+      filteredPeople = await loadProfiles(supabase)
+    } else {
+      const [pending, scoped] = await Promise.all([
+        loadProfiles(supabase, { role: 'pending' }),
+        memberIds.size > 0 ? loadProfiles(supabase, { ids: [...memberIds] }) : Promise.resolve([] as Profile[]),
+      ])
+      const byId = new Map<string, Profile>()
+      for (const p of [...pending, ...scoped]) byId.set(p.id, p)
+      filteredPeople = [...byId.values()]
+    }
   }
 
-  filteredPeople = await syncInviteBlocked(filteredPeople)
+  filteredPeople = await syncSignInFlags(filteredPeople)
 
-  const loggedInIds = filteredPeople.filter(p => p.last_sign_in_at).map(p => p.id)
+  const loggedInIds = filteredPeople
+    .filter(p => p.last_sign_in_at || p.invite_blocked)
+    .map(p => p.id)
 
   return (
     <div className="mx-auto max-w-4xl">

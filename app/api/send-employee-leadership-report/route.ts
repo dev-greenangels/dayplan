@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
     const emails = [...new Set(leaders.map(l => l.email).filter(Boolean))] as string[]
     const leaderIds = [...new Set(leaders.map(l => l.id).filter(Boolean))] as string[]
 
-    const dateStr = formatUkDate(date)
+    const dateStr = formatUkDate(date, { weekday: false })
     const fromName = profile.full_name || user.email
 
     let emailSent = 0
@@ -122,12 +122,13 @@ export async function POST(req: NextRequest) {
         is_system: !!c.is_system,
         hidden: !!c.hidden,
       }))
-      const tableHtml = buildDeptGroupedPlanTableHtml(emailRows, 'completed', extraCols)
+      const tableHtml = buildDeptGroupedPlanTableHtml(emailRows, 'employee_report', extraCols)
 
       const html = `
         <div style="font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 24px;">
-          <h2 style="color:#2d6a4f;">Звіт керівництву — ${team.name} — ${dateStr}</h2>
-          <p style="color:#555;">Від: <strong>${fromName}</strong></p>
+          <h2 style="color:#2d6a4f;margin:0 0 4px;">Звіт керівництву — ${team.name}</h2>
+          <p style="color:#2d6a4f;font-size:16px;font-weight:600;margin:0 0 12px;">${dateStr}</p>
+          <p style="color:#555;margin:0 0 16px;">Від: <strong>${fromName}</strong></p>
           ${tableHtml}
           <p style="margin-top:16px;font-size:12px;color:#999;">PlanDay-GA</p>
         </div>
@@ -162,11 +163,23 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    const sentAt = new Date().toISOString()
+    const rowIds = withCompleted.map(r => r.id).filter(Boolean)
+    if (rowIds.length > 0) {
+      const { error: stampErr } = await admin
+        .from('task_rows')
+        .update({ report_sent_at: sentAt })
+        .in('id', rowIds)
+      if (stampErr) {
+        console.warn('[send-employee-leadership-report] report_sent_at update failed', stampErr.message)
+      }
+    }
+
     return NextResponse.json({
       success: true,
       emailSent,
       pushSent,
-      sent_at: new Date().toISOString(),
+      sent_at: sentAt,
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error'

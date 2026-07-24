@@ -7,7 +7,7 @@ import EmployeeDashboard from './employee-dashboard'
 type TaskRowWithPlan = TaskRow & { day_plans: DayPlan | null }
 
 const ROW_SELECT =
-  'id, plan_id, employee_id, shift, planned, notified, completed, notes, notify_email, notify_push, created_at, plan_email_sent_at, plan_push_sent_at, extra, day_plans!inner(id, plan_date, team_id, created_by, created_at, digest_sent_at)'
+  'id, plan_id, employee_id, shift, planned, notified, completed, notes, notify_email, notify_push, created_at, plan_email_sent_at, plan_push_sent_at, report_sent_at, extra, day_plans!inner(id, plan_date, team_id, created_by, created_at, digest_sent_at)'
 
 export default async function DashboardPage() {
   const { supabase, profile, user } = await requireUser()

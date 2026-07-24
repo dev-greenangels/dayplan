@@ -37,17 +37,11 @@ export default function EmployeeDashboard({
   const [isPending, startTransition] = useTransition()
   const [reportBusy, setReportBusy] = useState(false)
   const [reportMsg, setReportMsg] = useState<string | null>(null)
-  const storageKey = teamId ? `emp-report:${teamId}:${today}:${profile.id}` : null
-  const [reportSentAt, setReportSentAt] = useState<string | null>(null)
+  const [reportSentAt, setReportSentAt] = useState<string | null>(todayRow?.report_sent_at ?? null)
 
   useEffect(() => {
-    if (!storageKey) return
-    try {
-      setReportSentAt(localStorage.getItem(storageKey))
-    } catch {
-      setReportSentAt(null)
-    }
-  }, [storageKey])
+    setReportSentAt(todayRow?.report_sent_at ?? null)
+  }, [todayRow?.report_sent_at, todayRow?.id])
 
   useEffect(() => {
     if (saved) {
@@ -92,11 +86,6 @@ export default function EmployeeDashboard({
       } else {
         const sentAt = (json.sent_at as string) || new Date().toISOString()
         setReportSentAt(sentAt)
-        if (storageKey) {
-          try {
-            localStorage.setItem(storageKey, sentAt)
-          } catch { /* ignore */ }
-        }
         const parts: string[] = []
         if (json.emailSent) parts.push(`email: ${json.emailSent}`)
         if (json.pushSent) parts.push(`push: ${json.pushSent}`)

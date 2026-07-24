@@ -94,7 +94,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (sendPush && isPushConfigured()) {
+    const pushConfigured = isPushConfigured()
+    if (sendPush && pushConfigured) {
       const titleDate = formatUkDate(date, { weekday: false })
       const pushed = await sendPushPerUser(
         supabase,
@@ -134,11 +135,14 @@ export async function POST(req: NextRequest) {
     }
 
     if (sent === 0) {
-      const hint = sendEmail && !sendPush
-        ? 'Не вдалося надіслати email (немає адрес/плану або Gmail не налаштовано)'
-        : !sendEmail && sendPush
-          ? 'Немає push-підписок у вибраних'
-          : 'Нічого не надіслано'
+      let hint = 'Нічого не надіслано'
+      if (sendPush && !pushConfigured) {
+        hint = 'Push не налаштовано на сервері (додайте VAPID_PUBLIC_KEY і VAPID_PRIVATE_KEY у Vercel)'
+      } else if (sendEmail && !sendPush) {
+        hint = 'Не вдалося надіслати email (немає адрес/плану або Gmail не налаштовано)'
+      } else if (!sendEmail && sendPush) {
+        hint = 'Немає push-підписок у вибраних (користувачі мають увімкнути сповіщення в додатку)'
+      }
       return NextResponse.json({ error: hint }, { status: 400 })
     }
 

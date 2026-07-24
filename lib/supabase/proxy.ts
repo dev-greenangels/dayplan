@@ -15,6 +15,15 @@ function isPublicPath(pathname: string) {
  * doing it here too caused /admin ↔ /pending ↔ /login redirect loops.
  */
 export async function updateSession(request: NextRequest) {
+  // OAuth/PKCE: Supabase often returns ?code= to Site URL (/). Exchange must happen on /auth/callback.
+  const code = request.nextUrl.searchParams.get('code')
+  const pathname = request.nextUrl.pathname
+  if (code && !pathname.startsWith('/auth/callback')) {
+    const url = request.nextUrl.clone()
+    url.pathname = '/auth/callback'
+    return NextResponse.redirect(url)
+  }
+
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
@@ -49,8 +58,6 @@ export async function updateSession(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser()
-
-  const pathname = request.nextUrl.pathname
 
   if (!user && !isPublicPath(pathname) && pathname !== '/' && !pathname.startsWith('/api')) {
     const url = request.nextUrl.clone()

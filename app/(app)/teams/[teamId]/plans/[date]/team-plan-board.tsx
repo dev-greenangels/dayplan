@@ -73,6 +73,7 @@ interface LocalRow {
   notes: string
   plan_email_sent_at: string | null
   plan_push_sent_at: string | null
+  report_sent_at: string | null
   extra: Record<string, string>
 }
 
@@ -98,6 +99,7 @@ function mapRows(initialRows: RowWithProfile[], fallbackShift = '8:00-18:00'): L
     notes: r.notes || '',
     plan_email_sent_at: r.plan_email_sent_at ?? null,
     plan_push_sent_at: r.plan_push_sent_at ?? null,
+    report_sent_at: r.report_sent_at ?? null,
     extra: (r.extra as Record<string, string>) || {},
   }))
 }
@@ -135,7 +137,10 @@ export default function TeamPlanBoard({
   const [sendOpen, setSendOpen] = useState(false)
   const [digestOpen, setDigestOpen] = useState(false)
   const [employeeReportBusy, setEmployeeReportBusy] = useState(false)
-  const [employeeReportSentAt, setEmployeeReportSentAt] = useState<string | null>(null)
+  const [employeeReportSentAt, setEmployeeReportSentAt] = useState<string | null>(() => {
+    const mine = initialRows.find(r => r.employee_id === currentUserId)
+    return mine?.report_sent_at ?? null
+  })
   const [datePickerOpen, setDatePickerOpen] = useState(false)
   const [pickerMonth, setPickerMonth] = useState(date) // any day in visible month
   const [tasksLocked, setTasksLocked] = useState(!canEditTasks)
@@ -158,15 +163,11 @@ export default function TeamPlanBoard({
   const showSendWorkers = team.show_send_worker_emails !== false
   const showSendLeadership = team.show_send_leadership !== false
   const allowEditTasks = canEditTasks && !tasksLocked
-  const employeeReportStorageKey = `emp-report:${team.id}:${date}:${currentUserId}`
 
   useEffect(() => {
-    try {
-      setEmployeeReportSentAt(localStorage.getItem(employeeReportStorageKey))
-    } catch {
-      setEmployeeReportSentAt(null)
-    }
-  }, [employeeReportStorageKey])
+    const mine = initialRows.find(r => r.employee_id === currentUserId)
+    setEmployeeReportSentAt(mine?.report_sent_at ?? null)
+  }, [initialRows, currentUserId, date, team.id])
 
   useEffect(() => {
     if (datePickerOpen) setPickerMonth(date)
@@ -483,9 +484,11 @@ export default function TeamPlanBoard({
       } else {
         const sentAt = (json.sent_at as string) || new Date().toISOString()
         setEmployeeReportSentAt(sentAt)
-        try {
-          localStorage.setItem(employeeReportStorageKey, sentAt)
-        } catch { /* ignore */ }
+        setLocalRows(prev =>
+          prev.map(r =>
+            r.employee_id === currentUserId ? { ...r, report_sent_at: sentAt } : r
+          )
+        )
         const parts: string[] = []
         if (json.emailSent) parts.push(`email: ${json.emailSent}`)
         if (json.pushSent) parts.push(`push: ${json.pushSent}`)
@@ -1052,6 +1055,7 @@ export default function TeamPlanBoard({
                 notes: '',
                 plan_email_sent_at: null,
                 plan_push_sent_at: null,
+                report_sent_at: null,
                 extra: {},
               }))
             setLocalRows(prev => {

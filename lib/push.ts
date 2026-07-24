@@ -21,6 +21,16 @@ export function isPushConfigured() {
   return !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY)
 }
 
+function isGoneSubscription(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const status = 'statusCode' in err ? Number((err as { statusCode?: number }).statusCode) : NaN
+  return status === 404 || status === 410
+}
+
+async function deleteSubscription(supabase: Supabase, endpoint: string) {
+  await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint)
+}
+
 export async function getTeamLeaderUserIds(supabase: Supabase, teamId: string): Promise<string[]> {
   const [{ data: superAdmins }, { data: deputies }] = await Promise.all([
     supabase.from('profiles').select('id').eq('role', 'super_admin'),
@@ -53,12 +63,14 @@ export async function sendPushToUserIds(
           JSON.stringify({
             title: payload.title,
             body: payload.body,
-            icon: payload.icon ?? '/icon-192.png',
+            icon: payload.icon ?? '/web-app-manifest-192x192.png',
           })
         )
         sent++
-      } catch {
-        // ignore
+      } catch (err) {
+        if (isGoneSubscription(err)) {
+          await deleteSubscription(supabase, sub.endpoint)
+        }
       }
     })
   )
@@ -90,12 +102,14 @@ export async function sendPushPerUser(
           JSON.stringify({
             title: item.title,
             body: item.body,
-            icon: '/icon-192.png',
+            icon: '/web-app-manifest-192x192.png',
           })
         )
         pushed.add(sub.user_id)
-      } catch {
-        // ignore
+      } catch (err) {
+        if (isGoneSubscription(err)) {
+          await deleteSubscription(supabase, sub.endpoint)
+        }
       }
     })
   )

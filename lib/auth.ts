@@ -52,24 +52,39 @@ export const getSessionProfile = cache(async (): Promise<SessionContext | null> 
 
   if (!profile) return null
 
-  // Optional columns — ignore failures if migrations lag schema cache
+  // Stamp sign-in on profiles (service role — RLS blocks employees from self-update)
   if (user.last_sign_in_at) {
-    void supabase
-      .from('profiles')
-      .update({
-        last_sign_in_at: user.last_sign_in_at,
-        invite_blocked: true,
-      })
-      .eq('id', user.id)
     profile = {
       ...profile,
       last_sign_in_at: user.last_sign_in_at,
       invite_blocked: true,
     }
+    void stampProfileSignIn(user.id, user.last_sign_in_at)
   }
 
   return { supabase, user, profile }
 })
+
+/** Persist last_sign_in_at + invite_blocked; prefer admin client so RLS never blocks. */
+async function stampProfileSignIn(userId: string, lastSignInAt: string) {
+  const payload = { last_sign_in_at: lastSignInAt, invite_blocked: true }
+  try {
+    const { createAdminClient } = await import('@/lib/supabase/admin')
+    const admin = createAdminClient()
+    const { error } = await admin.from('profiles').update(payload).eq('id', userId)
+    if (!error) return
+    console.warn('[auth] stampProfileSignIn admin failed', error.message)
+  } catch (e) {
+    console.warn('[auth] stampProfileSignIn admin unavailable', e)
+  }
+  // Fallback: session client (works for sub_admin / super_admin only)
+  try {
+    const supabase = await createClient()
+    await supabase.from('profiles').update(payload).eq('id', userId)
+  } catch {
+    /* ignore */
+  }
+}
 
 export async function requireUser(): Promise<SessionContext> {
   const ctx = await getSessionProfile()

@@ -113,7 +113,7 @@ export default async function TeamPlanPage({ params }: Props) {
     const { data } = await supabase
       .from('task_rows')
       .select(
-        `id, plan_id, employee_id, shift, planned, notified, completed, notes, notify_email, notify_push, created_at, plan_email_sent_at, plan_push_sent_at, extra, department_id, profile:profiles(${PROFILE_JOIN}), department:departments(id, team_id, name, sort_order, archived_at, created_at)`
+        `id, plan_id, employee_id, shift, planned, notified, completed, notes, notify_email, notify_push, created_at, plan_email_sent_at, plan_push_sent_at, report_sent_at, extra, department_id, profile:profiles(${PROFILE_JOIN}), department:departments(id, team_id, name, sort_order, archived_at, created_at)`
       )
       .eq('plan_id', plan.id)
       .order('created_at')
