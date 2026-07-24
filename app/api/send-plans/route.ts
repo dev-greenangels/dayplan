@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getApiSession, assertAdminApi, canManageTeam } from '@/lib/auth'
 import { isMailConfigured, sendAppMail } from '@/lib/mail'
 import { getTeamLeaderUserIds, isPushConfigured, sendPushPerUser, sendPushToUserIds } from '@/lib/push'
+import { getNotifyPrefsByUserIds } from '@/lib/notify-prefs'
 import { formatUkDate } from '@/lib/format-date'
 import { escapeHtml, formatPlanDateDots } from '@/lib/email-plan-html'
 
@@ -53,6 +54,7 @@ export async function POST(req: NextRequest) {
     }
 
     const employeeIds = rows.map(r => r.employee_id)
+    const prefs = await getNotifyPrefsByUserIds(supabase, employeeIds)
     let sent = 0
     let emailSent = 0
     let pushSent = 0
@@ -60,7 +62,9 @@ export async function POST(req: NextRequest) {
     const emailedIds: string[] = []
     const pushedIds: string[] = []
 
-    const withEmail = rows.filter(r => r.email && r.planned?.trim())
+    const withEmail = rows.filter(
+      r => r.email && r.planned?.trim() && prefs.get(r.employee_id)?.email !== false
+    )
     if (sendEmail && withEmail.length > 0 && isMailConfigured()) {
       const dateStr = formatUkDate(date)
       const dateDots = formatPlanDateDots(date)
@@ -97,9 +101,10 @@ export async function POST(req: NextRequest) {
     const pushConfigured = isPushConfigured()
     if (sendPush && pushConfigured) {
       const titleDate = formatUkDate(date, { weekday: false })
+      const pushRows = rows.filter(r => prefs.get(r.employee_id)?.push !== false)
       const pushed = await sendPushPerUser(
         supabase,
-        rows.map(r => ({
+        pushRows.map(r => ({
           userId: r.employee_id,
           title: `План на ${titleDate}`,
           body: (r.planned || 'Нове завдання').slice(0, 100),
@@ -128,7 +133,9 @@ export async function POST(req: NextRequest) {
     if (sent > 0) {
       const titleDate = formatUkDate(date, { weekday: false })
       const leaderIds = await getTeamLeaderUserIds(supabase, teamId)
-      await sendPushToUserIds(supabase, leaderIds, {
+      const leaderPrefs = await getNotifyPrefsByUserIds(supabase, leaderIds)
+      const pushLeaders = leaderIds.filter(id => leaderPrefs.get(id)?.push !== false)
+      await sendPushToUserIds(supabase, pushLeaders, {
         title: `Завдання на ${titleDate}`,
         body: `Завдання команди «${team?.name ?? ''}» відправлено працівникам`,
       })

@@ -68,20 +68,33 @@ export async function POST(req: NextRequest) {
 
     const { data: superAdmins } = await supabase
       .from('profiles')
-      .select('id, email')
+      .select('id, email, notify_email, notify_push')
       .eq('role', 'super_admin')
 
     const { data: deputies } = await supabase
       .from('team_admins')
-      .select('user_id, profile:profiles(id, email)')
+      .select('user_id, profile:profiles(id, email, notify_email, notify_push)')
       .eq('team_id', teamId)
 
     const allLeaders = [
-      ...(superAdmins ?? []).map(a => ({ id: a.id, email: a.email })),
+      ...(superAdmins ?? []).map(a => ({
+        id: a.id,
+        email: a.email,
+        notify_email: a.notify_email !== false,
+        notify_push: a.notify_push !== false,
+      })),
       ...(deputies ?? []).map(d => {
-        const p = d.profile as { id?: string; email?: string } | { id?: string; email?: string }[] | null
+        const p = d.profile as
+          | { id?: string; email?: string; notify_email?: boolean; notify_push?: boolean }
+          | { id?: string; email?: string; notify_email?: boolean; notify_push?: boolean }[]
+          | null
         const prof = Array.isArray(p) ? p[0] : p
-        return { id: prof?.id || d.user_id, email: prof?.email }
+        return {
+          id: prof?.id || d.user_id,
+          email: prof?.email,
+          notify_email: prof?.notify_email !== false,
+          notify_push: prof?.notify_push !== false,
+        }
       }),
     ]
 
@@ -91,8 +104,16 @@ export async function POST(req: NextRequest) {
       recipients = allLeaders.filter(a => allow.has(a.id))
     }
 
-    const emails = [...new Set(recipients.map(a => a.email).filter(Boolean))] as string[]
-    const recipientUserIds = [...new Set(recipients.map(a => a.id).filter(Boolean))]
+    const emails = [...new Set(
+      recipients
+        .filter(a => a.notify_email && a.email)
+        .map(a => a.email)
+        .filter(Boolean)
+    )] as string[]
+    const recipientUserIds = [...new Set(
+      recipients.filter(a => a.notify_push && a.id).map(a => a.id)
+    )]
+    const emailEligibleIds = recipients.filter(a => a.notify_email && a.email).map(a => a.id)
 
     if (recipients.length === 0) {
       return NextResponse.json({ error: 'Немає отримувачів' }, { status: 400 })
@@ -145,9 +166,7 @@ export async function POST(req: NextRequest) {
           html,
         })
         emailSent = emails.length
-        for (const r of recipients) {
-          if (r.email) emailedIds.push(r.id)
-        }
+        emailedIds.push(...emailEligibleIds)
       }
     }
 

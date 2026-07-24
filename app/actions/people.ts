@@ -346,6 +346,22 @@ export async function updatePersonName(userId: string, fullName: string) {
   return { success: true }
 }
 
+export async function updatePersonNotifyPrefs(
+  userId: string,
+  prefs: { notify_email?: boolean; notify_push?: boolean }
+) {
+  const { supabase } = await requireAdmin()
+  const payload: { notify_email?: boolean; notify_push?: boolean } = {}
+  if (typeof prefs.notify_email === 'boolean') payload.notify_email = prefs.notify_email
+  if (typeof prefs.notify_push === 'boolean') payload.notify_push = prefs.notify_push
+  if (Object.keys(payload).length === 0) return { error: 'Немає змін' }
+
+  const { error } = await supabase.from('profiles').update(payload).eq('id', userId)
+  if (error) return { error: error.message }
+  revalidatePath('/admin/people')
+  return { success: true }
+}
+
 export async function setDeputyTeams(userId: string, teamIds: string[]) {
   const { supabase, profile } = await requireAdmin()
   const unique = [...new Set(teamIds.filter(Boolean))]

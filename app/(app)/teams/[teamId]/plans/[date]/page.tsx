@@ -16,7 +16,7 @@ function asProfile(raw: unknown): Profile | null {
 }
 
 const PROFILE_JOIN =
-  'id, full_name, email, role, department, created_at, last_sign_in_at'
+  'id, full_name, email, role, department, created_at, last_sign_in_at, avatar_url'
 
 export default async function TeamPlanPage({ params }: Props) {
   const { teamId, date } = await params
@@ -50,14 +50,14 @@ export default async function TeamPlanPage({ params }: Props) {
 
   const leadersPromise = isAdmin
     ? Promise.all([
-        supabase.from('profiles').select('id, full_name, email, role').eq('role', 'super_admin'),
+        supabase.from('profiles').select('id, full_name, email, role, avatar_url').eq('role', 'super_admin'),
         supabase
           .from('team_admins')
-          .select('user_id, profile:profiles(id, full_name, email, role)')
+          .select('user_id, profile:profiles(id, full_name, email, role, avatar_url)')
           .eq('team_id', teamId),
       ])
     : Promise.resolve([
-        { data: null as { id: string; full_name: string; email: string; role: string }[] | null },
+        { data: null as { id: string; full_name: string; email: string; role: string; avatar_url?: string | null }[] | null },
         { data: null as { user_id: string; profile: unknown }[] | null },
       ] as const)
 
@@ -180,19 +180,20 @@ export default async function TeamPlanPage({ params }: Props) {
     profile: displayProfile(r.employee_id, asProfile(r.profile)) ?? undefined,
   })) as typeof rows
 
-  let leaders: { id: string; full_name: string; email: string; role: string }[] = []
+  let leaders: { id: string; full_name: string; email: string; role: string; avatar_url?: string | null }[] = []
   if (isAdmin) {
     const [supersRes, deputyRes] = leadersBundle as [
-      { data: { id: string; full_name: string; email: string; role: string }[] | null },
+      { data: { id: string; full_name: string; email: string; role: string; avatar_url?: string | null }[] | null },
       { data: { user_id: string; profile: unknown }[] | null },
     ]
-    const map = new Map<string, { id: string; full_name: string; email: string; role: string }>()
+    const map = new Map<string, { id: string; full_name: string; email: string; role: string; avatar_url?: string | null }>()
     for (const s of supersRes.data ?? []) {
       map.set(s.id, {
         id: s.id,
         full_name: s.full_name || s.email,
         email: s.email || '',
         role: s.role,
+        avatar_url: s.avatar_url ?? null,
       })
     }
     for (const d of deputyRes.data ?? []) {
@@ -203,6 +204,7 @@ export default async function TeamPlanPage({ params }: Props) {
         full_name: p.full_name || p.email,
         email: p.email || '',
         role: p.role,
+        avatar_url: p.avatar_url ?? null,
       })
     }
     leaders = [...map.values()].sort((a, b) => a.full_name.localeCompare(b.full_name, 'uk'))
@@ -210,6 +212,21 @@ export default async function TeamPlanPage({ params }: Props) {
 
   const planDates = (existingPlansRes.data ?? []).map(p => p.plan_date)
   const previousPlanDate = planDates.find(d => d < date) ?? null
+
+  const pushUserIds = [
+    ...new Set([
+      ...ids,
+      ...leaders.map(l => l.id),
+    ]),
+  ]
+  let pushActiveIds: string[] = []
+  if (isAdmin && pushUserIds.length > 0) {
+    const { data: subs } = await supabase
+      .from('push_subscriptions')
+      .select('user_id')
+      .in('user_id', pushUserIds)
+    pushActiveIds = [...new Set((subs ?? []).map(s => s.user_id))]
+  }
 
   return (
     <div className="plan-page min-w-0 max-w-full">
@@ -239,6 +256,7 @@ export default async function TeamPlanPage({ params }: Props) {
         currentUserId={user.id}
         loggedInIds={loggedInIds}
         hiddenFromPlanIds={hiddenFromPlanIds}
+        pushActiveIds={pushActiveIds}
       />
     </div>
   )

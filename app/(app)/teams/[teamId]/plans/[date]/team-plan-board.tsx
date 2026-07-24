@@ -15,6 +15,7 @@ import {
 } from '@/lib/format-date'
 import ConfirmDialog from '@/components/confirm-dialog'
 import Modal from '@/components/modal'
+import UserAvatar, { PushStatusBell } from '@/components/user-avatar'
 
 type RowWithProfile = TaskRow & {
   profile?: Profile | null
@@ -32,6 +33,7 @@ interface Leader {
   full_name: string
   email: string
   role: string
+  avatar_url?: string | null
   email_sent_at?: string | null
   push_sent_at?: string | null
 }
@@ -59,6 +61,7 @@ interface Props {
   currentUserId: string
   loggedInIds: string[]
   hiddenFromPlanIds: string[]
+  pushActiveIds: string[]
 }
 
 interface LocalRow {
@@ -67,6 +70,7 @@ interface LocalRow {
   department_id: string | null
   full_name: string
   email: string
+  avatar_url?: string | null
   shift: string
   planned: string
   completed: string
@@ -93,6 +97,7 @@ function mapRows(initialRows: RowWithProfile[], fallbackShift = '8:00-18:00'): L
     department_id: r.department_id,
     full_name: r.profile?.full_name?.trim() || 'Працівник',
     email: r.profile?.email || '',
+    avatar_url: r.profile?.avatar_url ?? null,
     shift: r.shift || fallbackShift,
     planned: r.planned || '',
     completed: r.completed || '',
@@ -123,6 +128,7 @@ export default function TeamPlanBoard({
   currentUserId,
   loggedInIds,
   hiddenFromPlanIds,
+  pushActiveIds,
 }: Props) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -159,6 +165,7 @@ export default function TeamPlanBoard({
   const committedEmployeeRef = useRef<Map<string, { completed: string; notes: string }>>(new Map())
   const loggedIn = useMemo(() => new Set(loggedInIds), [loggedInIds])
   const hiddenSet = useMemo(() => new Set(hiddenFromPlanIds), [hiddenFromPlanIds])
+  const pushActive = useMemo(() => new Set(pushActiveIds), [pushActiveIds])
   const defaultShift = team.default_shift?.trim() || '8:00-18:00'
   const showSendWorkers = team.show_send_worker_emails !== false
   const showSendLeadership = team.show_send_leadership !== false
@@ -547,12 +554,12 @@ export default function TeamPlanBoard({
   const colCount = 1 + visibleCols.length
 
   const DEPT_STYLES = [
-    { head: 'bg-emerald-100/90 text-emerald-950', row: 'bg-emerald-50/30' },
-    { head: 'bg-sky-100/90 text-sky-950', row: 'bg-sky-50/30' },
-    { head: 'bg-amber-100/90 text-amber-950', row: 'bg-amber-50/30' },
-    { head: 'bg-violet-100/90 text-violet-950', row: 'bg-violet-50/30' },
-    { head: 'bg-rose-100/90 text-rose-950', row: 'bg-rose-50/30' },
-    { head: 'bg-teal-100/90 text-teal-950', row: 'bg-teal-50/30' },
+    { head: 'bg-emerald-100/90 text-emerald-950', row: 'bg-emerald-50/30', identity: 'bg-emerald-100/45' },
+    { head: 'bg-sky-100/90 text-sky-950', row: 'bg-sky-50/30', identity: 'bg-sky-100/45' },
+    { head: 'bg-amber-100/90 text-amber-950', row: 'bg-amber-50/30', identity: 'bg-amber-100/45' },
+    { head: 'bg-violet-100/90 text-violet-950', row: 'bg-violet-50/30', identity: 'bg-violet-100/45' },
+    { head: 'bg-rose-100/90 text-rose-950', row: 'bg-rose-50/30', identity: 'bg-rose-100/45' },
+    { head: 'bg-teal-100/90 text-teal-950', row: 'bg-teal-50/30', identity: 'bg-teal-100/45' },
   ] as const
 
   return (
@@ -916,18 +923,18 @@ export default function TeamPlanBoard({
           </table>
       </div>
 
-      {/* Mobile: unified list with department separators */}
-      <div className="glass-card overflow-hidden sm:hidden">
+      {/* Mobile: separate cards per worker for clearer scanning */}
+      <div className="flex flex-col gap-4 sm:hidden">
         {localRows.length === 0 ? (
-          <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          <div className="glass-card px-4 py-8 text-center text-sm text-muted-foreground">
             {isAdmin ? 'Натисніть «Додати», щоб заповнити план' : 'План ще порожній'}
           </div>
         ) : (
           sections.map((section, sectionIdx) => {
             const style = DEPT_STYLES[sectionIdx % DEPT_STYLES.length]
             return (
-              <div key={section.id}>
-                <div className={`px-3 py-2 text-xs font-bold tracking-wide ${style.head}`}>
+              <div key={section.id} className="flex flex-col gap-2.5">
+                <div className={`rounded-lg px-3 py-2 text-xs font-bold tracking-wide ${style.head}`}>
                   відділ: {section.name}
                 </div>
                 {section.rows.map((row, rowIdx) => {
@@ -936,11 +943,11 @@ export default function TeamPlanBoard({
                   return (
                     <div
                       key={row.employee_id}
-                      className={`px-4 pt-3.5 pb-7 ${style.row} ${
-                        rowIdx < section.rows.length - 1 ? 'border-b-2 border-border/45' : ''
-                      } ${notLoggedIn ? 'bg-amber-50/70' : ''}`}
+                      className={`rounded-xl border border-black/10 bg-white/90 px-3.5 py-3.5 shadow-sm ${
+                        notLoggedIn ? 'border-amber-300/70 bg-amber-50/90' : ''
+                      }`}
                     >
-                      <div className="mb-3">
+                      <div className={`mb-3 -mx-1 rounded-lg px-2.5 py-2 ${style.identity}`}>
                         <RowIdentity
                           row={row}
                           isAdmin={isAdmin}
@@ -949,23 +956,36 @@ export default function TeamPlanBoard({
                           removeDisabled={isPending}
                         />
                       </div>
-                      <div className="flex flex-col gap-2.5">
+                      <div className="flex flex-col gap-3">
                         {visibleCols.map(c => {
                           const val = cellValue(row, c)
-                          if (c.key === 'shift' && !isAdmin) {
+                          if (c.key === 'shift') {
                             return (
-                              <div key={c.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-base">
-                                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              <div key={c.id} className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                                <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-foreground/70">
                                   {COL_ICONS[c.key] ? <span className="mr-1 normal-case">{COL_ICONS[c.key]}</span> : null}
                                   {c.label}
                                 </span>
-                                <span className="font-semibold text-foreground">{val.trim() || '—'}</span>
+                                {isAdmin ? (
+                                  <PlanField
+                                    col={c}
+                                    isAdmin={isAdmin}
+                                    canEdit={canEditField('shift', row)}
+                                    value={val}
+                                    onChange={v => onCellChange(row, c, v)}
+                                    onBlurAdmin={() => { scheduleBlurSave() }}
+                                    onBlurEmployee={() => {}}
+                                    compact
+                                  />
+                                ) : (
+                                  <span className="text-base font-semibold text-foreground">{val.trim() || '—'}</span>
+                                )}
                               </div>
                             )
                           }
                           return (
-                          <div key={c.id} className="flex flex-col gap-1">
-                            <label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          <div key={c.id} className="flex flex-col gap-1.5">
+                            <label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-foreground/70">
                               {COL_ICONS[c.key] ? <span className="normal-case">{COL_ICONS[c.key]}</span> : null}
                               {c.label}
                               {c.key === 'planned' && showLockOnPlanned && (
@@ -1049,6 +1069,7 @@ export default function TeamPlanBoard({
                 department_id: m.department_id,
                 full_name: m.profile?.full_name?.trim() || 'Працівник',
                 email: m.profile?.email || '',
+                avatar_url: m.profile?.avatar_url ?? null,
                 shift: defaultShift,
                 planned: '',
                 completed: '',
@@ -1072,6 +1093,7 @@ export default function TeamPlanBoard({
         open={sendOpen}
         rows={localRows}
         busy={sending}
+        pushActiveIds={pushActive}
         onClose={() => setSendOpen(false)}
         onSend={async (selectedIds, channels) => {
           setSending(true)
@@ -1129,6 +1151,7 @@ export default function TeamPlanBoard({
         open={digestOpen}
         leaders={leaders}
         busy={digestSending}
+        pushActiveIds={pushActive}
         onClose={() => setDigestOpen(false)}
         onSend={(ids, channels, content) => { void sendDigest(ids, channels, content) }}
       />
@@ -1328,6 +1351,7 @@ function RowIdentity({
           </svg>
         </button>
       )}
+      <UserAvatar url={row.avatar_url} name={row.full_name} size={32} />
       <div>
         <div className="whitespace-nowrap text-[15px] font-semibold leading-tight text-foreground">
           {row.full_name}
@@ -1373,18 +1397,19 @@ function PlanField({
   const isShift = col.key === 'shift'
   const fieldTone =
     col.key === 'planned'
-      ? 'border-sky-300/80 bg-sky-50/70'
+      ? 'border-sky-400/90 bg-sky-50 shadow-[0_1px_2px_rgba(15,23,42,0.06),inset_0_0_0_1px_rgba(56,189,248,0.12)]'
       : col.key === 'completed'
         ? value.trim()
-          ? 'border-emerald-400 bg-emerald-50 text-emerald-900'
-          : 'border-emerald-200/80 bg-emerald-50/40'
-        : 'border-input bg-white/60'
+          ? 'border-emerald-500 bg-emerald-50 text-emerald-900 shadow-[0_1px_2px_rgba(15,23,42,0.06),inset_0_0_0_1px_rgba(16,185,129,0.15)]'
+          : 'border-emerald-300 bg-emerald-50/70 shadow-[0_1px_2px_rgba(15,23,42,0.05)]'
+        : 'border-border bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
   const plannedAsText = col.key === 'planned' && !isAdmin
   const minW = compact || isShift ? '' : 'min-w-[180px]'
+  const fieldShadow = 'shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
 
   if (plannedAsText) {
     return (
-      <div className={`min-h-[40px] w-full whitespace-pre-wrap rounded-[0.3rem] border border-sky-200/70 bg-sky-50/50 px-2.5 py-2 text-base leading-snug text-foreground ${minW}`}>
+      <div className={`min-h-[40px] w-full whitespace-pre-wrap rounded-md border border-sky-300 bg-sky-50/80 px-2.5 py-2 text-base leading-snug text-foreground ${fieldShadow} ${minW}`}>
         {value.trim() || '—'}
       </div>
     )
@@ -1400,7 +1425,7 @@ function PlanField({
           if (isAdmin) onBlurAdmin()
           else onBlurEmployee(v)
         }}
-        className={`w-full resize-none overflow-hidden rounded-[0.3rem] border px-2.5 py-2 text-base leading-snug disabled:opacity-60 ${minW} ${fieldTone}`}
+        className={`w-full resize-none overflow-hidden rounded-md border px-2.5 py-2 text-base leading-snug disabled:opacity-60 ${minW} ${fieldTone}`}
       />
     )
   }
@@ -1421,7 +1446,7 @@ function PlanField({
         size={shiftChars}
         onChange={e => onChange(e.target.value)}
         onBlur={() => { if (isAdmin) onBlurAdmin() }}
-        className="w-auto max-w-none whitespace-nowrap rounded-[0.3rem] border border-input bg-white/60 px-2.5 py-2 text-base disabled:opacity-60 [field-sizing:content]"
+        className={`w-auto max-w-none whitespace-nowrap rounded-md border border-border bg-white px-2.5 py-1.5 text-base font-medium disabled:opacity-60 [field-sizing:content] ${fieldShadow}`}
       />
     )
   }
@@ -1432,7 +1457,7 @@ function PlanField({
       disabled={!canEdit}
       onChange={e => onChange(e.target.value)}
       onBlur={() => { if (isAdmin) onBlurAdmin() }}
-      className={`w-full rounded-[0.3rem] border border-input bg-white/60 px-2.5 py-2 text-base disabled:opacity-60 ${minW}`}
+      className={`w-full rounded-md border border-border bg-white px-2.5 py-2 text-base disabled:opacity-60 ${fieldShadow} ${minW}`}
     />
   )
 }
@@ -1613,10 +1638,12 @@ function ChannelStamps({
 function SendChannelButtons({
   busy,
   disabled,
+  pushDisabled,
   onSend,
 }: {
   busy: boolean
   disabled: boolean
+  pushDisabled?: boolean
   onSend: (channels: SendChannels) => void
 }) {
   return (
@@ -1631,7 +1658,8 @@ function SendChannelButtons({
       </button>
       <button
         type="button"
-        disabled={busy || disabled}
+        disabled={busy || disabled || !!pushDisabled}
+        title={pushDisabled ? 'Ніхто з вибраних не активував push' : undefined}
         onClick={() => onSend('push')}
         className="tap-btn flex-1 rounded-lg border border-border bg-white/80 px-3 py-2.5 text-sm font-medium text-foreground disabled:opacity-40"
       >
@@ -1653,12 +1681,14 @@ function SendTasksModal({
   open,
   rows,
   busy,
+  pushActiveIds,
   onClose,
   onSend,
 }: {
   open: boolean
   rows: LocalRow[]
   busy: boolean
+  pushActiveIds: Set<string>
   onClose: () => void
   onSend: (ids: string[], channels: SendChannels) => void
 }) {
@@ -1667,6 +1697,8 @@ function SendTasksModal({
   useEffect(() => {
     if (open) setSelected(new Set(rows.map(r => r.employee_id)))
   }, [open, rows])
+
+  const selectedHasPush = [...selected].some(id => pushActiveIds.has(id))
 
   return (
     <Modal
@@ -1697,8 +1729,12 @@ function SendTasksModal({
                     })
                   }}
                 />
+                <UserAvatar url={r.avatar_url} name={r.full_name} size={28} className="mt-0.5" />
                 <span className="min-w-0 flex-1">
-                  <span className="font-medium">{r.full_name}</span>
+                  <span className="inline-flex items-center gap-1.5 font-medium">
+                    {r.full_name}
+                    <PushStatusBell active={pushActiveIds.has(r.employee_id)} />
+                  </span>
                   <span className="block text-xs text-muted-foreground">{r.email || 'без email'}</span>
                   <ChannelStamps emailAt={r.plan_email_sent_at} pushAt={r.plan_push_sent_at} />
                 </span>
@@ -1707,11 +1743,13 @@ function SendTasksModal({
           ))}
         </ul>
         <p className="text-[11px] text-muted-foreground">
-          Вибрано: {selected.size}. Email — лише з адресою і планом; push — з підпискою.
+          Вибрано: {selected.size}. ✉ email · 🔔 push активовано на пристрої.
+          {!selectedHasPush && selected.size > 0 ? ' Ніхто з вибраних не має push.' : ''}
         </p>
         <SendChannelButtons
           busy={busy}
           disabled={selected.size === 0}
+          pushDisabled={!selectedHasPush}
           onSend={channels => onSend([...selected], channels)}
         />
       </div>
@@ -1723,12 +1761,14 @@ function DigestModal({
   open,
   leaders,
   busy,
+  pushActiveIds,
   onClose,
   onSend,
 }: {
   open: boolean
   leaders: Leader[]
   busy: boolean
+  pushActiveIds: Set<string>
   onClose: () => void
   onSend: (ids: string[], channels: SendChannels, content: DigestContent) => void
 }) {
@@ -1741,6 +1781,8 @@ function DigestModal({
       setContent('full')
     }
   }, [open])
+
+  const selectedHasPush = [...selected].some(id => pushActiveIds.has(id))
 
   return (
     <Modal
@@ -1799,8 +1841,12 @@ function DigestModal({
                       })
                     }}
                   />
+                  <UserAvatar url={l.avatar_url} name={l.full_name} size={28} className="mt-0.5" />
                   <span className="min-w-0 flex-1">
-                    <span className="font-medium">{l.full_name}</span>
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      {l.full_name}
+                      <PushStatusBell active={pushActiveIds.has(l.id)} />
+                    </span>
                     <span className="ml-1 text-[10px] text-muted-foreground">
                       ({l.role === 'super_admin' ? 'Шеф' : 'Заступник'})
                     </span>
@@ -1811,10 +1857,14 @@ function DigestModal({
               </li>
             ))}
           </ul>
-          <p className="text-[11px] text-muted-foreground">Вибрано: {selected.size}</p>
+          <p className="text-[11px] text-muted-foreground">
+            Вибрано: {selected.size}
+            {!selectedHasPush && selected.size > 0 ? ' · ніхто з вибраних не має push' : ''}
+          </p>
           <SendChannelButtons
             busy={busy}
             disabled={selected.size === 0}
+            pushDisabled={!selectedHasPush}
             onSend={channels => onSend([...selected], channels, content)}
           />
         </div>

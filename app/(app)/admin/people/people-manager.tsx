@@ -12,10 +12,12 @@ import {
   setDeputyTeams,
   setUserRole,
   updatePersonName,
+  updatePersonNotifyPrefs,
 } from '@/app/actions/people'
 import ConfirmDialog from '@/components/confirm-dialog'
 import Modal from '@/components/modal'
 import PencilEdit from '@/components/pencil-edit'
+import UserAvatar, { PushStatusBell } from '@/components/user-avatar'
 import { formatUkDateTime } from '@/lib/format-date'
 
 interface Membership {
@@ -31,6 +33,7 @@ interface Props {
   memberships: Membership[]
   adminships: { user_id: string; team_id: string }[]
   loggedInIds: string[]
+  pushActiveIds: string[]
   isSuperAdmin: boolean
   currentUserId: string
 }
@@ -49,6 +52,7 @@ export default function PeopleManager({
   memberships,
   adminships,
   loggedInIds,
+  pushActiveIds,
   isSuperAdmin,
   currentUserId,
 }: Props) {
@@ -60,6 +64,7 @@ export default function PeopleManager({
   const [toDelete, setToDelete] = useState<Profile | null>(null)
 
   const loggedIn = useMemo(() => new Set(loggedInIds), [loggedInIds])
+  const pushActive = useMemo(() => new Set(pushActiveIds), [pushActiveIds])
 
   const filtered = useMemo(() => {
     return people.filter(p => {
@@ -175,6 +180,7 @@ export default function PeopleManager({
             currentMembership={memberships.find(x => x.user_id === person.id) ?? null}
             deputyTeamIds={adminships.filter(a => a.user_id === person.id).map(a => a.team_id)}
             hasLoggedIn={loggedIn.has(person.id)}
+            pushActive={pushActive.has(person.id)}
             isSuperAdmin={isSuperAdmin}
             isSelf={person.id === currentUserId}
             disabled={isPending}
@@ -191,6 +197,7 @@ export default function PeopleManager({
             }
             onSetRole={role => run(() => setUserRole(person.id, role))}
             onSaveName={name => run(() => updatePersonName(person.id, name))}
+            onSaveNotify={prefs => run(() => updatePersonNotifyPrefs(person.id, prefs))}
           />
         ))}
         {filtered.length === 0 && (
@@ -395,6 +402,7 @@ function PersonCard({
   currentMembership,
   deputyTeamIds,
   hasLoggedIn,
+  pushActive,
   isSuperAdmin,
   isSelf,
   disabled,
@@ -405,6 +413,7 @@ function PersonCard({
   onSaveDeputyTeams,
   onSetRole,
   onSaveName,
+  onSaveNotify,
 }: {
   person: Profile
   teams: Team[]
@@ -413,6 +422,7 @@ function PersonCard({
   currentMembership: Membership | null
   deputyTeamIds: string[]
   hasLoggedIn: boolean
+  pushActive: boolean
   isSuperAdmin: boolean
   isSelf: boolean
   disabled: boolean
@@ -423,6 +433,7 @@ function PersonCard({
   onSaveDeputyTeams: (teamIds: string[]) => void
   onSetRole: (role: UserRole) => void
   onSaveName: (name: string) => void
+  onSaveNotify: (prefs: { notify_email?: boolean; notify_push?: boolean }) => void
 }) {
   const [role, setRole] = useState<UserRole>('employee')
   const [teamId, setTeamId] = useState(currentMembership?.team_id || teams[0]?.id || '')
@@ -466,13 +477,18 @@ function PersonCard({
   return (
     <div className={`glass-card relative p-4 ${showInvite ? 'pb-12' : ''} ${!hasLoggedIn && person.role !== 'pending' ? 'ring-1 ring-amber-200/80' : ''}`}>
       <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <PencilEdit
-            value={person.full_name || ''}
-            disabled={disabled}
-            onSave={onSaveName}
-            textClassName="text-base font-semibold text-foreground"
-          />
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <UserAvatar url={person.avatar_url} name={person.full_name || person.email} size={40} />
+          <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <PencilEdit
+              value={person.full_name || ''}
+              disabled={disabled}
+              onSave={onSaveName}
+              textClassName="text-base font-semibold text-foreground"
+            />
+            {person.role !== 'pending' && <PushStatusBell active={pushActive} />}
+          </div>
           <p className="mt-0.5 text-xs text-muted-foreground">{person.email}</p>
           <p className="mt-1 text-xs text-muted-foreground">
             {ROLE_LABEL[person.role]} · {membershipLabel}
@@ -480,6 +496,31 @@ function PersonCard({
               <span className="ml-1 text-amber-700">· ще не входив</span>
             )}
           </p>
+          {person.role !== 'pending' && (
+            <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5">
+              <label className="flex items-center gap-1.5 text-xs text-foreground">
+                <input
+                  type="checkbox"
+                  className="accent-primary h-3.5 w-3.5"
+                  checked={person.notify_email !== false}
+                  disabled={disabled}
+                  onChange={e => onSaveNotify({ notify_email: e.target.checked })}
+                />
+                Email
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-foreground">
+                <input
+                  type="checkbox"
+                  className="accent-primary h-3.5 w-3.5"
+                  checked={person.notify_push !== false}
+                  disabled={disabled}
+                  onChange={e => onSaveNotify({ notify_push: e.target.checked })}
+                />
+                Push
+              </label>
+            </div>
+          )}
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {canEditCard && (

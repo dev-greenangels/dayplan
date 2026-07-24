@@ -1,12 +1,13 @@
 import { requireAdmin, getManagedTeamIds, isBoss } from '@/lib/auth'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { avatarFromMetadata } from '@/lib/avatar'
 import type { Profile } from '@/lib/types'
 import PeopleManager from './people-manager'
 
 const SELECT_FULL =
-  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked, last_sign_in_at'
+  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked, last_sign_in_at, notify_email, notify_push, avatar_url'
 const SELECT_INVITE =
-  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked'
+  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked, notify_email, notify_push, avatar_url'
 const SELECT_BASE = 'id, full_name, email, role, department, created_at'
 
 async function loadProfiles(
@@ -30,8 +31,7 @@ async function loadProfiles(
 }
 
 /**
- * Pull real last_sign_in_at from Auth for everyone on the page (boss + deputy + employee).
- * Profiles cache can lag; Auth is source of truth.
+ * Pull last_sign_in_at + avatar from Auth (Google picture lives in user_metadata).
  */
 async function syncSignInFlags(people: Profile[]): Promise<Profile[]> {
   let next = people.map(p => ({ ...p }))
@@ -39,8 +39,8 @@ async function syncSignInFlags(people: Profile[]): Promise<Profile[]> {
   try {
     const admin = createAdminClient()
     const authSignIn = new Map<string, string>()
+    const authAvatar = new Map<string, string>()
 
-    // Paginate Auth users (covers boss/deputy who often use Google)
     for (let page = 1; page <= 10; page++) {
       const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 })
       if (error) {
@@ -49,28 +49,47 @@ async function syncSignInFlags(people: Profile[]): Promise<Profile[]> {
       }
       for (const u of data.users) {
         if (u.last_sign_in_at) authSignIn.set(u.id, u.last_sign_in_at)
+        const pic = avatarFromMetadata(u.user_metadata as Record<string, unknown>)
+        if (pic) authAvatar.set(u.id, pic)
       }
       if (data.users.length < 200) break
     }
 
-    const toPersist: { id: string; last_sign_in_at: string }[] = []
+    const toPersist: { id: string; last_sign_in_at?: string; avatar_url?: string; invite_blocked?: boolean }[] = []
     next = next.map(p => {
       const at = authSignIn.get(p.id) || p.last_sign_in_at || null
+      const av = authAvatar.get(p.id) || p.avatar_url || null
+      const patch: { id: string; last_sign_in_at?: string; avatar_url?: string; invite_blocked?: boolean } = { id: p.id }
+      let changed = false
       if (at && at !== p.last_sign_in_at) {
-        toPersist.push({ id: p.id, last_sign_in_at: at })
+        patch.last_sign_in_at = at
+        patch.invite_blocked = true
+        changed = true
       }
-      if (!at) return p
-      return { ...p, last_sign_in_at: at, invite_blocked: true }
+      if (av && av !== p.avatar_url) {
+        patch.avatar_url = av
+        changed = true
+      }
+      if (changed) toPersist.push(patch)
+      return {
+        ...p,
+        last_sign_in_at: at || p.last_sign_in_at,
+        invite_blocked: !!(p.invite_blocked || at),
+        avatar_url: av,
+      }
     })
 
     if (toPersist.length > 0) {
       await Promise.all(
-        toPersist.map(u =>
-          admin
-            .from('profiles')
-            .update({ last_sign_in_at: u.last_sign_in_at, invite_blocked: true })
-            .eq('id', u.id)
-        )
+        toPersist.map(u => {
+          const payload: Record<string, unknown> = {}
+          if (u.last_sign_in_at) {
+            payload.last_sign_in_at = u.last_sign_in_at
+            payload.invite_blocked = true
+          }
+          if (u.avatar_url) payload.avatar_url = u.avatar_url
+          return admin.from('profiles').update(payload).eq('id', u.id)
+        })
       )
     }
   } catch (e) {
@@ -156,6 +175,16 @@ export default async function PeoplePage() {
     .filter(p => p.last_sign_in_at || p.invite_blocked)
     .map(p => p.id)
 
+  const personIds = filteredPeople.map(p => p.id)
+  let pushActiveIds: string[] = []
+  if (personIds.length > 0) {
+    const { data: subs } = await supabase
+      .from('push_subscriptions')
+      .select('user_id')
+      .in('user_id', personIds)
+    pushActiveIds = [...new Set((subs ?? []).map(s => s.user_id))]
+  }
+
   return (
     <div className="mx-auto max-w-4xl">
       <PeopleManager
@@ -165,6 +194,7 @@ export default async function PeoplePage() {
         memberships={members}
         adminships={adminshipsRes.data ?? []}
         loggedInIds={loggedInIds}
+        pushActiveIds={pushActiveIds}
         isSuperAdmin={isBoss(profile.role)}
         currentUserId={profile.id}
       />

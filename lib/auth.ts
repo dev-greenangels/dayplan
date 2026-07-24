@@ -5,6 +5,8 @@ import type { Profile } from '@/lib/types'
 import type { User } from '@supabase/supabase-js'
 import { isBoss, isDeputyOrBoss } from '@/lib/roles'
 
+import { avatarFromMetadata } from '@/lib/avatar'
+
 export type SessionContext = {
   supabase: Awaited<ReturnType<typeof createClient>>
   user: User
@@ -15,6 +17,7 @@ export { isBoss, isDeputyOrBoss } from '@/lib/roles'
 
 /** Core columns that always exist — never block auth on optional migration cols. */
 const PROFILE_CORE = 'id, full_name, email, role, department, created_at'
+const PROFILE_WITH_NOTIFY = `${PROFILE_CORE}, notify_email, notify_push, avatar_url`
 
 /**
  * Request-scoped session + profile. Dedupes getUser + profiles within one RSC tree.
@@ -27,11 +30,27 @@ export const getSessionProfile = cache(async (): Promise<SessionContext | null> 
   } = await supabase.auth.getUser()
   if (!user) return null
 
-  let { data: profile, error } = await supabase
-    .from('profiles')
-    .select(PROFILE_CORE)
-    .eq('id', user.id)
-    .maybeSingle<Profile>()
+  let profile: Profile | null = null
+  let error: { message: string } | null = null
+
+  {
+    const res = await supabase
+      .from('profiles')
+      .select(PROFILE_WITH_NOTIFY)
+      .eq('id', user.id)
+      .maybeSingle<Profile>()
+    if (!res.error) {
+      profile = res.data
+    } else {
+      const fallback = await supabase
+        .from('profiles')
+        .select(PROFILE_CORE)
+        .eq('id', user.id)
+        .maybeSingle<Profile>()
+      profile = fallback.data
+      error = fallback.error
+    }
+  }
 
   // Row missing → create pending (first login). Do not invent on other errors.
   if (!profile && !error) {
@@ -44,13 +63,34 @@ export const getSessionProfile = cache(async (): Promise<SessionContext | null> 
     })
     const refetch = await supabase
       .from('profiles')
-      .select(PROFILE_CORE)
+      .select(PROFILE_WITH_NOTIFY)
       .eq('id', user.id)
       .maybeSingle<Profile>()
-    profile = refetch.data
+    if (!refetch.error) {
+      profile = refetch.data
+    } else {
+      const fallback = await supabase
+        .from('profiles')
+        .select(PROFILE_CORE)
+        .eq('id', user.id)
+        .maybeSingle<Profile>()
+      profile = fallback.data
+    }
   }
 
   if (!profile) return null
+
+  profile = {
+    ...profile,
+    notify_email: profile.notify_email !== false,
+    notify_push: profile.notify_push !== false,
+  }
+
+  const metaAvatar = avatarFromMetadata(user.user_metadata as Record<string, unknown>)
+  if (metaAvatar && metaAvatar !== profile.avatar_url) {
+    profile = { ...profile, avatar_url: metaAvatar }
+    void stampProfileAvatar(user.id, metaAvatar)
+  }
 
   // Stamp sign-in on profiles (service role — RLS blocks employees from self-update)
   if (user.last_sign_in_at) {
@@ -64,6 +104,16 @@ export const getSessionProfile = cache(async (): Promise<SessionContext | null> 
 
   return { supabase, user, profile }
 })
+
+async function stampProfileAvatar(userId: string, avatarUrl: string) {
+  try {
+    const { createAdminClient } = await import('@/lib/supabase/admin')
+    const admin = createAdminClient()
+    await admin.from('profiles').update({ avatar_url: avatarUrl }).eq('id', userId)
+  } catch (e) {
+    console.warn('[auth] stampProfileAvatar failed', e)
+  }
+}
 
 /** Persist last_sign_in_at + invite_blocked; prefer admin client so RLS never blocks. */
 async function stampProfileSignIn(userId: string, lastSignInAt: string) {

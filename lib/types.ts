@@ -12,6 +12,12 @@ export interface Profile {
   invite_sent_at?: string | null
   invite_blocked?: boolean
   last_sign_in_at?: string | null
+  /** Prefer receiving plan/report emails (default true) */
+  notify_email?: boolean
+  /** Prefer receiving plan/report web push (default true) */
+  notify_push?: boolean
+  /** Cached Google/OAuth avatar URL */
+  avatar_url?: string | null
 }
 
 export interface Team {

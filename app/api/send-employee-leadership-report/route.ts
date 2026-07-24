@@ -3,6 +3,7 @@ import { getApiSession, isBoss } from '@/lib/auth'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { isMailConfigured, sendAppMail } from '@/lib/mail'
 import { isPushConfigured, sendPushToUserIds } from '@/lib/push'
+import { getNotifyPrefsByUserIds } from '@/lib/notify-prefs'
 import { formatUkDate } from '@/lib/format-date'
 import {
   buildDeptGroupedPlanTableHtml,
@@ -82,8 +83,18 @@ export async function POST(req: NextRequest) {
         return { id: prof?.id || a.user_id, email: prof?.email }
       }),
     ]
-    const emails = [...new Set(leaders.map(l => l.email).filter(Boolean))] as string[]
     const leaderIds = [...new Set(leaders.map(l => l.id).filter(Boolean))] as string[]
+    const prefs = await getNotifyPrefsByUserIds(
+      admin as Parameters<typeof getNotifyPrefsByUserIds>[0],
+      leaderIds
+    )
+    const emails = [...new Set(
+      leaders
+        .filter(l => l.email && prefs.get(l.id)?.email !== false)
+        .map(l => l.email)
+        .filter(Boolean)
+    )] as string[]
+    const pushLeaderIds = leaderIds.filter(id => prefs.get(id)?.push !== false)
 
     const dateStr = formatUkDate(date, { weekday: false })
     const fromName = profile.full_name || user.email
@@ -94,9 +105,9 @@ export async function POST(req: NextRequest) {
     const mailOk = isMailConfigured()
     const pushOk = isPushConfigured()
 
-    if (emails.length === 0 && leaderIds.length === 0) {
+    if (emails.length === 0 && pushLeaderIds.length === 0) {
       return NextResponse.json(
-        { error: 'Немає керівництва з email (додайте Шефа або Заступника команди)' },
+        { error: 'Немає керівництва з увімкненими сповіщеннями (або без email)' },
         { status: 400 }
       )
     }
@@ -143,9 +154,9 @@ export async function POST(req: NextRequest) {
       emailSent = emails.length
     }
 
-    if (leaderIds.length > 0 && pushOk) {
+    if (pushLeaderIds.length > 0 && pushOk) {
       // sendPushToUserIds uses caller supabase — pass admin so subscriptions are readable
-      pushSent = await sendPushToUserIds(admin as Parameters<typeof sendPushToUserIds>[0], leaderIds, {
+      pushSent = await sendPushToUserIds(admin as Parameters<typeof sendPushToUserIds>[0], pushLeaderIds, {
         title: 'Звіт керівництву',
         body: `${fromName} · ${team.name} · ${dateStr}`,
       })
