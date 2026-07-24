@@ -48,6 +48,35 @@ export default async function TeamPlanPage({ params }: Props) {
     if (team.work_mode === 'individual') redirect('/dashboard')
   }
 
+  let memberPlanDates: string[] = []
+  if (!isAdmin) {
+    const { data: myPlanRows } = await supabase
+      .from('task_rows')
+      .select('day_plans!inner(plan_date, team_id)')
+      .eq('employee_id', user.id)
+      .eq('day_plans.team_id', teamId)
+    memberPlanDates = [
+      ...new Set(
+        (myPlanRows ?? [])
+          .map(r => {
+            const dp = r.day_plans as { plan_date?: string } | { plan_date?: string }[] | null
+            const row = Array.isArray(dp) ? dp[0] : dp
+            return row?.plan_date
+          })
+          .filter((d): d is string => !!d)
+      ),
+    ].sort()
+    if (!memberPlanDates.includes(date)) {
+      if (memberPlanDates.length === 0) redirect('/dashboard')
+      const today = new Date().toISOString().slice(0, 10)
+      const pastOrToday = memberPlanDates.filter(d => d <= today)
+      const target = pastOrToday.length
+        ? pastOrToday[pastOrToday.length - 1]
+        : memberPlanDates[0]
+      redirect(`/teams/${teamId}/plans/${target}`)
+    }
+  }
+
   const leadersPromise = isAdmin
     ? Promise.all([
         supabase.from('profiles').select('id, full_name, email, role, avatar_url').eq('role', 'super_admin'),
@@ -291,6 +320,7 @@ export default async function TeamPlanPage({ params }: Props) {
         loggedInIds={loggedInIds}
         hiddenFromPlanIds={hiddenFromPlanIds}
         pushActiveIds={pushActiveIds}
+        memberPlanDates={memberPlanDates}
       />
     </div>
   )

@@ -17,6 +17,8 @@ import ConfirmDialog from '@/components/confirm-dialog'
 import Modal from '@/components/modal'
 import UserAvatar, { PushStatusBell } from '@/components/user-avatar'
 import { useToast } from '@/components/toast-provider'
+import { usePlanChromeLock } from '@/components/plan-chrome-lock'
+import { createClient } from '@/lib/supabase/client'
 
 type RowWithProfile = TaskRow & {
   profile?: Profile | null
@@ -63,6 +65,8 @@ interface Props {
   loggedInIds: string[]
   hiddenFromPlanIds: string[]
   pushActiveIds: string[]
+  /** Dates where this employee already has a task_row (employees only) */
+  memberPlanDates?: string[]
 }
 
 interface LocalRow {
@@ -130,9 +134,11 @@ export default function TeamPlanBoard({
   loggedInIds,
   hiddenFromPlanIds,
   pushActiveIds,
+  memberPlanDates = [],
 }: Props) {
   const router = useRouter()
   const toast = useToast()
+  const { chromeBlocked, setChromeBlocked } = usePlanChromeLock()
   const [isPending, startTransition] = useTransition()
   const [sending, setSending] = useState(false)
   const [digestSending, setDigestSending] = useState(false)
@@ -284,6 +290,41 @@ export default function TeamPlanBoard({
     }
   }, [])
 
+  // Live lock sync for admins only (boss + deputies)
+  useEffect(() => {
+    if (!isAdmin) return
+    const supabase = createClient()
+    const channel = supabase
+      .channel(`team-lock:${team.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'teams',
+          filter: `id=eq.${team.id}`,
+        },
+        (payload: { new: Record<string, unknown> }) => {
+          const next = payload.new?.plan_tasks_locked !== false
+          setTasksLocked(prev => {
+            if (prev === next) return prev
+            queueMicrotask(() => {
+              toast.info(next ? 'План заблоковано' : 'План розблоковано')
+            })
+            return next
+          })
+        }
+      )
+      .subscribe()
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [isAdmin, team.id, toast])
+
+  useEffect(() => {
+    return () => setChromeBlocked(false)
+  }, [setChromeBlocked])
+
   const leaders = useMemo(() => {
     return initialLeaders.map(l => ({
       ...l,
@@ -392,16 +433,23 @@ export default function TeamPlanBoard({
     }
   }, [date])
 
+  const memberDateSet = useMemo(() => new Set(memberPlanDates), [memberPlanDates])
+
   const dateTabs = useMemo(() => {
     const today = todayISO()
     const set = new Set(planDates)
-    return daysInMonth(date).map(d => ({
+    const days = daysInMonth(date)
+    const list = !isAdmin && memberPlanDates.length > 0
+      ? days.filter(d => memberDateSet.has(d))
+      : days
+    return list.map(d => ({
       date: d,
       hasPlan: set.has(d) || (d === date && !!activePlanId),
       isToday: d === today,
       isSelected: d === date,
+      allowed: isAdmin || memberDateSet.has(d),
     }))
-  }, [date, planDates, activePlanId])
+  }, [date, planDates, activePlanId, isAdmin, memberPlanDates, memberDateSet])
 
   const sections = useMemo(() => {
     const map = new Map<string, LocalRow[]>()
@@ -428,6 +476,7 @@ export default function TeamPlanBoard({
 
   async function goToDate(d: string) {
     if (d === date) return
+    if (!isAdmin && memberPlanDates.length > 0 && !memberDateSet.has(d)) return
     await flushSave()
     router.push(`/teams/${team.id}/plans/${d}`)
   }
@@ -624,47 +673,6 @@ export default function TeamPlanBoard({
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold text-foreground">{team.name}</h1>
-            {isSubAdmin && (
-              <button
-                type="button"
-                title={
-                  !canEditTasks
-                    ? 'Редагування завдань вимкнено в налаштуваннях'
-                    : tasksLocked
-                      ? 'Розблокувати редагування завдань'
-                      : 'Заблокувати редагування завдань'
-                }
-                disabled={!canEditTasks || lockBusy}
-                onClick={() => {
-                  if (!canEditTasks || lockBusy) return
-                  const next = !tasksLocked
-                  setTasksLocked(next)
-                  setLockBusy(true)
-                  void setTeamPlanTasksLocked(team.id, next).then(res => {
-                    setLockBusy(false)
-                    if (res.error) {
-                      setTasksLocked(!next)
-                      toast.error(res.error)
-                    }
-                  })
-                }}
-                className={`tap-btn rounded-lg p-1.5 ${
-                  tasksLocked || !canEditTasks
-                    ? 'bg-amber-100 text-amber-800'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                } disabled:opacity-60`}
-              >
-                {tasksLocked || !canEditTasks ? (
-                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                ) : (
-                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
-                  </svg>
-                )}
-              </button>
-            )}
           </div>
           {isAdmin && (
             <p className="mt-0.5 text-[11px] text-muted-foreground">
@@ -727,8 +735,8 @@ export default function TeamPlanBoard({
                 }
                 setDeleteOpen(true)
               }}
-              disabled={isPending}
-              title="Видалити план на цю дату"
+              disabled={isPending || chromeBlocked}
+              title={chromeBlocked ? 'Спочатку розблокуйте план' : 'Видалити план на цю дату'}
               className="tap-btn inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 disabled:opacity-40"
             >
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -754,7 +762,50 @@ export default function TeamPlanBoard({
             monthBarStuck ? 'rounded-t-none rounded-b-lg' : 'rounded-lg'
           }`}
         >
-          <p className="min-w-0 truncate text-sm font-semibold text-foreground">Плани на {monthLabel}</p>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p className="min-w-0 truncate text-sm font-semibold text-foreground">Плани на {monthLabel}</p>
+            {isAdmin && canEditTasks && (
+              <button
+                type="button"
+                title={
+                  tasksLocked
+                    ? 'Розблокувати редагування завдань'
+                    : 'Заблокувати редагування завдань'
+                }
+                disabled={lockBusy}
+                onClick={() => {
+                  if (lockBusy) return
+                  const next = !tasksLocked
+                  setTasksLocked(next)
+                  if (isSubAdmin) setChromeBlocked(next)
+                  setLockBusy(true)
+                  void setTeamPlanTasksLocked(team.id, next).then(res => {
+                    setLockBusy(false)
+                    if (res.error) {
+                      setTasksLocked(!next)
+                      if (isSubAdmin) setChromeBlocked(!next)
+                      toast.error(res.error)
+                    }
+                  })
+                }}
+                className={`tap-btn shrink-0 rounded-lg p-1.5 ${
+                  tasksLocked
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                } disabled:opacity-60`}
+              >
+                {tasksLocked ? (
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                ) : (
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" />
+                  </svg>
+                )}
+              </button>
+            )}
+          </div>
           <div className="relative shrink-0" ref={datePickerRef}>
             <button
               type="button"
@@ -820,15 +871,18 @@ export default function TeamPlanBoard({
                       const dayNum = Number(day.slice(8, 10))
                       const selected = day === date
                       const isToday = day === today
+                      const allowed = isAdmin || memberDateSet.size === 0 || memberDateSet.has(day)
                       cells.push(
                         <button
                           key={day}
                           type="button"
+                          disabled={!allowed}
                           onClick={() => {
+                            if (!allowed) return
                             setDatePickerOpen(false)
                             void goToDate(day)
                           }}
-                          className={`tap-btn aspect-square rounded-lg text-sm font-semibold ${
+                          className={`tap-btn aspect-square rounded-lg text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-30 ${
                             selected
                               ? 'bg-primary text-primary-foreground shadow-sm'
                               : isToday
@@ -1305,15 +1359,16 @@ export default function TeamPlanBoard({
             <button
               type="button"
               onClick={() => {
+                if (chromeBlocked) return
                 if (!activePlanId && localRows.length === 0) {
                   setMsg('Спочатку додайте працівників')
                   return
                 }
                 setDeleteOpen(true)
               }}
-              disabled={isPending}
+              disabled={isPending || chromeBlocked}
               className="tap-btn flex flex-1 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-[10px] font-medium text-red-500 disabled:opacity-40"
-              title="Видалити план"
+              title={chromeBlocked ? 'Спочатку розблокуйте план' : 'Видалити план'}
             >
               <span className="flex h-9 w-9 items-center justify-center rounded-full bg-red-50/90 text-red-500 shadow-sm">
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1421,7 +1476,12 @@ function RowIdentity({
           </div>
         )}
         {isAdmin && notLoggedIn && (
-          <div className="mt-0.5 whitespace-nowrap text-[10px] font-medium text-amber-700/90">ще не входив</div>
+          <div className="mt-0.5 inline-flex items-center gap-0.5 whitespace-nowrap text-[10px] font-medium text-amber-700/90">
+            <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            ще не входив
+          </div>
         )}
       </div>
     </div>

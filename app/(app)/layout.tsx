@@ -3,6 +3,7 @@ import { getSessionProfile } from '@/lib/auth'
 import NavBar from '@/components/nav-bar'
 import PushProvider from '@/components/push-provider'
 import { ToastProvider } from '@/components/toast-provider'
+import { PlanChromeLockProvider } from '@/components/plan-chrome-lock'
 
 export type MembershipInfo = {
   teamName: string | null
@@ -43,12 +44,14 @@ export default async function AppLayout({
   return (
     <PushProvider>
       <ToastProvider>
-        <div className="page-bg min-h-screen">
-          <NavBar profile={ctx.profile} membership={membership} />
-          <main className="app-main mx-auto min-w-0 max-w-[1600px] px-3 py-4 sm:px-4 sm:py-6">
-            {children}
-          </main>
-        </div>
+        <PlanChromeLockProvider>
+          <div className="page-bg min-h-screen">
+            <NavBar profile={ctx.profile} membership={membership} />
+            <main className="app-main mx-auto min-w-0 max-w-[1600px] px-3 py-4 sm:px-4 sm:py-6">
+              {children}
+            </main>
+          </div>
+        </PlanChromeLockProvider>
       </ToastProvider>
     </PushProvider>
   )

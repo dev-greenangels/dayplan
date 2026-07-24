@@ -1,8 +1,14 @@
 'use client'
 
 import { useState, useTransition, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import type { DayPlan, Profile, TaskRow } from '@/lib/types'
-import { formatUkDate, formatUkDateTime } from '@/lib/format-date'
+import {
+  formatUkDate,
+  formatUkDateTime,
+  formatUkDayTab,
+  formatUkShortDate,
+} from '@/lib/format-date'
 import { updateTaskRowFields } from '@/app/actions/plans'
 import BrandLogo from '@/components/brand-logo'
 
@@ -10,38 +16,43 @@ type TaskRowWithPlan = TaskRow & { day_plans: DayPlan | null }
 
 interface Props {
   profile: Profile
-  todayRow: TaskRowWithPlan | null
-  todayPlan: DayPlan | null
-  pastRows: TaskRowWithPlan[]
+  selectedDate: string
+  selectedRow: TaskRowWithPlan | null
+  planDates: string[]
   teamName?: string
   teamId?: string
-}
-
-function formatDate(dateStr: string) {
-  return formatUkDate(dateStr)
+  isToday: boolean
 }
 
 export default function EmployeeDashboard({
   profile,
-  todayRow,
-  todayPlan: _todayPlan,
-  pastRows,
+  selectedDate,
+  selectedRow,
+  planDates,
   teamName,
   teamId,
+  isToday,
 }: Props) {
-  const today = new Date().toISOString().slice(0, 10)
-  const [report, setReport] = useState(todayRow?.completed ?? '')
-  const [notes, setNotes] = useState(todayRow?.notes ?? '')
+  const router = useRouter()
+  const [report, setReport] = useState(selectedRow?.completed ?? '')
+  const [notes, setNotes] = useState(selectedRow?.notes ?? '')
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   const [reportBusy, setReportBusy] = useState(false)
   const [reportMsg, setReportMsg] = useState<string | null>(null)
-  const [reportSentAt, setReportSentAt] = useState<string | null>(todayRow?.report_sent_at ?? null)
+  const [reportSentAt, setReportSentAt] = useState<string | null>(
+    selectedRow?.report_sent_at ?? null
+  )
 
   useEffect(() => {
-    setReportSentAt(todayRow?.report_sent_at ?? null)
-  }, [todayRow?.report_sent_at, todayRow?.id])
+    setReport(selectedRow?.completed ?? '')
+    setNotes(selectedRow?.notes ?? '')
+    setReportSentAt(selectedRow?.report_sent_at ?? null)
+    setSaved(false)
+    setError(null)
+    setReportMsg(null)
+  }, [selectedRow?.id, selectedRow?.completed, selectedRow?.notes, selectedRow?.report_sent_at])
 
   useEffect(() => {
     if (saved) {
@@ -50,11 +61,16 @@ export default function EmployeeDashboard({
     }
   }, [saved])
 
+  function goToDate(d: string) {
+    if (d === selectedDate) return
+    router.push(`/dashboard?date=${d}`)
+  }
+
   function handleSubmit() {
-    if (!todayRow) return
+    if (!selectedRow) return
     setError(null)
     startTransition(async () => {
-      const res = await updateTaskRowFields(todayRow.id, {
+      const res = await updateTaskRowFields(selectedRow.id, {
         completed: report,
         notes,
       })
@@ -72,13 +88,13 @@ export default function EmployeeDashboard({
     setReportBusy(true)
     setReportMsg(null)
     try {
-      if (todayRow) {
-        await updateTaskRowFields(todayRow.id, { completed: report, notes })
+      if (selectedRow) {
+        await updateTaskRowFields(selectedRow.id, { completed: report, notes })
       }
       const res = await fetch('/api/send-employee-leadership-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teamId, date: today }),
+        body: JSON.stringify({ teamId, date: selectedDate }),
       })
       const json = await res.json()
       if (!res.ok || json.error) {
@@ -98,15 +114,44 @@ export default function EmployeeDashboard({
     setReportBusy(false)
   }
 
+  const sortedDates = [...planDates].sort()
+
   return (
     <div className="mx-auto max-w-lg pb-24">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-foreground">
           Привіт, {profile.full_name || 'Працівнику'}
         </h1>
-        <p className="mt-0.5 text-sm text-muted-foreground">{formatDate(today)}</p>
+        <p className="mt-0.5 text-sm text-muted-foreground">{formatUkDate(selectedDate)}</p>
         {teamName && <p className="text-xs text-muted-foreground">{teamName}</p>}
       </div>
+
+      {sortedDates.length > 0 && (
+        <div className="mb-4 min-w-0 rounded-xl border border-border/50 bg-white/50 p-2">
+          <p className="mb-2 px-1 text-xs font-medium text-muted-foreground">Мої плани</p>
+          <div className="flex max-w-full gap-1 overflow-x-auto overscroll-x-contain pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {sortedDates.map(d => {
+              const label = formatUkDayTab(d)
+              const selected = d === selectedDate
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => goToDate(d)}
+                  className={`tap-btn flex min-w-[48px] shrink-0 flex-col items-center rounded-lg px-2 py-1.5 text-center transition ${
+                    selected
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : 'border border-border/60 text-muted-foreground hover:bg-muted'
+                  }`}
+                >
+                  <span className="text-[10px] uppercase opacity-80">{label.weekday}</span>
+                  <span className="text-sm font-semibold leading-tight">{label.day}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {(error || reportMsg) && (
         <p className={`mb-3 rounded-lg border px-3 py-2 text-sm ${
@@ -123,30 +168,36 @@ export default function EmployeeDashboard({
           <BrandLogo size={40} rounded="rounded-xl" />
           <div>
             <p className="font-semibold text-foreground">
-              Мій план на {formatUkDate(today, { weekday: false })}
+              Мій план на {formatUkShortDate(selectedDate)}
             </p>
           </div>
         </div>
 
-        {todayRow ? (
+        {selectedRow ? (
           <div className="rounded-xl border border-border bg-white/40 px-4 py-3">
-            {todayRow.shift && (
+            {selectedRow.shift && (
               <p className="mb-2 text-xs font-medium text-muted-foreground">
-                Зміна: <span className="font-semibold text-foreground">{todayRow.shift}</span>
+                Зміна: <span className="font-semibold text-foreground">{selectedRow.shift}</span>
               </p>
             )}
             <p className="whitespace-pre-wrap text-base leading-relaxed text-foreground">
-              {todayRow.planned || <span className="italic text-muted-foreground">План ще не заповнено</span>}
+              {selectedRow.planned || (
+                <span className="italic text-muted-foreground">План ще не заповнено</span>
+              )}
             </p>
           </div>
         ) : (
           <div className="rounded-xl border border-dashed border-border bg-white/20 px-4 py-8 text-center">
-            <p className="text-sm text-muted-foreground">Адмін ще не склав план на сьогодні</p>
+            <p className="text-sm text-muted-foreground">
+              {isToday
+                ? 'Шеф ще не склав план на сьогодні'
+                : 'Немає плану на цей день'}
+            </p>
           </div>
         )}
       </div>
 
-      {todayRow && (
+      {selectedRow && (
         <div className="glass-card mb-4 p-6">
           <p className="mb-3 font-semibold text-foreground">Мій звіт за день</p>
           <textarea
@@ -175,32 +226,7 @@ export default function EmployeeDashboard({
         </div>
       )}
 
-      {pastRows.length > 0 && (
-        <div className="glass-card p-6">
-          <p className="mb-3 text-sm font-semibold text-foreground">Попередні дні</p>
-          <div className="flex flex-col gap-2">
-            {pastRows.map(row => (
-              <div key={row.id} className="flex items-start justify-between gap-3 rounded-xl border border-border/50 bg-white/30 px-4 py-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-muted-foreground">
-                    {row.day_plans?.plan_date ? formatDate(row.day_plans.plan_date) : '—'}
-                  </p>
-                  <p className="mt-0.5 truncate text-sm text-foreground">
-                    {row.planned || <span className="italic text-muted-foreground">Без плану</span>}
-                  </p>
-                </div>
-                {row.completed ? (
-                  <span className="shrink-0 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">Виконано</span>
-                ) : (
-                  <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">Без звіту</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {teamId && todayRow && (
+      {teamId && selectedRow && (
         <div
           className="fixed inset-x-0 bottom-0 z-30 px-3"
           style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}

@@ -113,32 +113,30 @@ export async function approveUser(opts: {
 
   if (error) return { error: error.message }
 
-  if (opts.role === 'employee') {
-    await supabase.from('team_members').delete().eq('user_id', opts.userId)
-    await supabase.from('team_members').upsert({
-      team_id: opts.teamId,
-      user_id: opts.userId,
-      department_id: opts.departmentId,
-    })
-  } else if (opts.role === 'sub_admin') {
+  if (opts.role === 'employee' || opts.role === 'sub_admin') {
     if (!opts.departmentId) return { error: 'Оберіть відділ' }
-    const teams = [...new Set([opts.teamId, ...(opts.teamIds ?? [])].filter(Boolean))]
-    for (const tid of teams) {
-      if (!canAccess(tid)) continue
-      await supabase.from('team_admins').upsert({
-        team_id: tid,
-        user_id: opts.userId,
-      })
+    if (opts.role === 'sub_admin') {
+      const teams = [...new Set([opts.teamId, ...(opts.teamIds ?? [])].filter(Boolean))]
+      for (const tid of teams) {
+        if (!canAccess(tid)) continue
+        const { error: adminErr } = await supabase.from('team_admins').upsert({
+          team_id: tid,
+          user_id: opts.userId,
+        })
+        if (adminErr) return { error: adminErr.message }
+      }
     }
     await supabase.from('team_members').delete().eq('user_id', opts.userId)
-    await supabase.from('team_members').upsert({
+    const { error: memberErr } = await supabase.from('team_members').upsert({
       team_id: opts.teamId,
       user_id: opts.userId,
       department_id: opts.departmentId,
     })
+    if (memberErr) return { error: 'Не вдалося додати в команду: ' + memberErr.message }
   }
 
   revalidatePath('/admin/people')
+  revalidatePath('/admin')
   return { success: true }
 }
 
@@ -222,27 +220,24 @@ export async function createPerson(opts: {
         : {}),
     }, { onConflict: 'id' })
 
-    if (opts.role === 'employee') {
-      await admin.from('team_members').delete().eq('user_id', userId)
-      await admin.from('team_members').upsert({
-        team_id: opts.teamId,
-        user_id: userId,
-        department_id: opts.departmentId,
-      })
-    } else if (opts.role === 'sub_admin') {
-      const teams = [...new Set([opts.teamId, ...(opts.teamIds ?? [])].filter(Boolean))]
-      for (const tid of teams) {
-        await admin.from('team_admins').upsert({
-          team_id: tid,
-          user_id: userId,
-        })
+    if (opts.role === 'employee' || opts.role === 'sub_admin') {
+      if (opts.role === 'sub_admin') {
+        const teams = [...new Set([opts.teamId, ...(opts.teamIds ?? [])].filter(Boolean))]
+        for (const tid of teams) {
+          const { error: adminErr } = await admin.from('team_admins').upsert({
+            team_id: tid,
+            user_id: userId,
+          })
+          if (adminErr) return { error: adminErr.message }
+        }
       }
       await admin.from('team_members').delete().eq('user_id', userId)
-      await admin.from('team_members').upsert({
+      const { error: memberErr } = await admin.from('team_members').upsert({
         team_id: opts.teamId,
         user_id: userId,
         department_id: opts.departmentId,
       })
+      if (memberErr) return { error: 'Не вдалося додати в команду: ' + memberErr.message }
     }
 
     if (opts.sendInvite) {
@@ -499,7 +494,11 @@ export async function movePerson(opts: {
   return { success: true }
 }
 
-export async function setUserRole(userId: string, role: UserRole) {
+export async function setUserRole(
+  userId: string,
+  role: UserRole,
+  opts?: { teamId?: string; departmentId?: string; teamIds?: string[] }
+) {
   const { supabase, profile } = await requireSuperAdmin()
   if (!ASSIGNABLE_ROLES.includes(role) && role !== 'pending') {
     return { error: 'Невірна роль' }
@@ -519,8 +518,51 @@ export async function setUserRole(userId: string, role: UserRole) {
       }
     }
   }
+
+  // employee / deputy must belong to a team — never leave orphan profiles
+  if (role === 'employee' || role === 'sub_admin') {
+    const { data: existing } = await supabase
+      .from('team_members')
+      .select('team_id, department_id')
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    const teamId = opts?.teamId || existing?.team_id
+    const departmentId = opts?.departmentId || existing?.department_id
+    if (!teamId || !departmentId) {
+      return { error: 'Спочатку оберіть команду і відділ, потім змініть роль' }
+    }
+    if (!(await canManageTeam(supabase, profile, teamId))) {
+      return { error: 'Немає доступу до цієї команди' }
+    }
+
+    if (role === 'sub_admin') {
+      const teams = [...new Set([teamId, ...(opts?.teamIds ?? [])].filter(Boolean))]
+      for (const tid of teams) {
+        if (!(await canManageTeam(supabase, profile, tid))) continue
+        const { error: adminErr } = await supabase.from('team_admins').upsert({
+          team_id: tid,
+          user_id: userId,
+        })
+        if (adminErr) return { error: adminErr.message }
+      }
+    } else {
+      // Downgrade from deputy → drop adminships
+      await supabase.from('team_admins').delete().eq('user_id', userId)
+    }
+
+    await supabase.from('team_members').delete().eq('user_id', userId)
+    const { error: memberErr } = await supabase.from('team_members').upsert({
+      team_id: teamId,
+      user_id: userId,
+      department_id: departmentId,
+    })
+    if (memberErr) return { error: 'Не вдалося додати в команду: ' + memberErr.message }
+  }
+
   const { error } = await supabase.from('profiles').update({ role }).eq('id', userId)
   if (error) return { error: error.message }
   revalidatePath('/admin/people')
+  revalidatePath('/admin')
   return { success: true }
 }

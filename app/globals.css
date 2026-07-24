@@ -179,7 +179,7 @@
     .app-main {
       padding-left: 1rem;
       padding-right: 1rem;
-      padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+      padding-bottom: calc(1.75rem + env(safe-area-inset-bottom));
     }
     .glass-card {
       border-radius: 1rem;

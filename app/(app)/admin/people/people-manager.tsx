@@ -106,16 +106,17 @@ export default function PeopleManager({
   const teamById = useMemo(() => new Map(teams.map(t => [t.id, t])), [teams])
   const deptById = useMemo(() => new Map(departments.map(d => [d.id, d])), [departments])
 
-  function membershipLabel(userId: string) {
+  function membershipLabel(userId: string, role: string) {
     const m = membershipByUser.get(userId)
     const adminTeams = adminTeamsByUser.get(userId) ?? []
     const team = m ? teamById.get(m.team_id) : null
     const dept = m?.department_id ? deptById.get(m.department_id) : null
     const place = [team?.name, dept?.name].filter(Boolean).join(' / ')
-    if (adminTeams.length) {
-      return place
-        ? `Заступник: ${adminTeams.join(', ')} · у плані: ${place}`
-        : `Заступник: ${adminTeams.join(', ')}`
+    if (role === 'sub_admin' || adminTeams.length) {
+      const parts: string[] = []
+      if (adminTeams.length) parts.push(`Команди: ${adminTeams.join(', ')}`)
+      if (place) parts.push(`у плані: ${place}`)
+      return parts.join(' · ') || '—'
     }
     return place || '—'
   }
@@ -142,7 +143,10 @@ export default function PeopleManager({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Люди</h1>
-          <p className="text-sm text-muted-foreground">Додавання, схвалення, переведення</p>
+          <p className="text-sm text-muted-foreground">
+            Додавання, схвалення, переведення · Усього: {people.length}
+            {roleFilter !== 'all' ? ` · показано: ${filtered.length}` : ''}
+          </p>
         </div>
         <button
           type="button"
@@ -190,7 +194,7 @@ export default function PeopleManager({
             person={person}
             teams={teams}
             departments={departments}
-            membershipLabel={membershipLabel(person.id)}
+            membershipLabel={membershipLabel(person.id, person.role)}
             currentMembership={memberships.find(x => x.user_id === person.id) ?? null}
             deputyTeamIds={adminships.filter(a => a.user_id === person.id).map(a => a.team_id)}
             hasLoggedIn={loggedIn.has(person.id)}
@@ -209,7 +213,9 @@ export default function PeopleManager({
             onSaveDeputyTeams={teamIds =>
               run(() => setDeputyTeams(person.id, teamIds))
             }
-            onSetRole={role => run(() => setUserRole(person.id, role))}
+            onSetRole={(role, teamId, departmentId, teamIds) =>
+              run(() => setUserRole(person.id, role, { teamId, departmentId, teamIds }))
+            }
             onSaveName={name => run(() => updatePersonName(person.id, name))}
             onSaveEmail={email => run(() => updatePersonEmail(person.id, email))}
             onSaveNotify={prefs => run(() => updatePersonNotifyPrefs(person.id, prefs))}
@@ -447,22 +453,35 @@ function PersonCard({
   onResend: () => void
   onMove: (teamId: string, departmentId: string) => void
   onSaveDeputyTeams: (teamIds: string[]) => void
-  onSetRole: (role: UserRole) => void
+  onSetRole: (role: UserRole, teamId?: string, departmentId?: string, teamIds?: string[]) => void
   onSaveName: (name: string) => void
   onSaveEmail: (email: string) => void
   onSaveNotify: (prefs: { notify_email?: boolean; notify_push?: boolean }) => void
 }) {
+  const needsTeam =
+    (person.role === 'employee' || person.role === 'sub_admin') && !currentMembership
+
   const [role, setRole] = useState<UserRole>('employee')
   const [teamId, setTeamId] = useState(currentMembership?.team_id || teams[0]?.id || '')
   const depts = departments.filter(d => d.team_id === teamId)
-  const [deptId, setDeptId] = useState(currentMembership?.department_id || depts[0]?.id || '')
+  const [deptId, setDeptId] = useState(currentMembership?.department_id || '')
   const [deputyTeams, setDeputyTeamsState] = useState<string[]>(
     deputyTeamIds.length ? deputyTeamIds : (teams[0]?.id ? [teams[0].id] : [])
   )
   const [extraTeams, setExtraTeams] = useState<string[]>([])
-  const [editing, setEditing] = useState(person.role === 'pending')
+  const [editing, setEditing] = useState(person.role === 'pending' || needsTeam)
   const moveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const deputyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const healedRef = useRef(false)
+
+  // Keep local selects in sync when server membership arrives
+  useEffect(() => {
+    if (currentMembership) {
+      setTeamId(currentMembership.team_id)
+      setDeptId(currentMembership.department_id || '')
+      healedRef.current = false
+    }
+  }, [currentMembership?.team_id, currentMembership?.department_id])
 
   useEffect(() => {
     return () => {
@@ -471,8 +490,23 @@ function PersonCard({
     }
   }, [])
 
+  // Auto-heal: employee/deputy without team_members → assign team+dept once
+  useEffect(() => {
+    if (disabled || healedRef.current || !needsTeam) return
+    const tid = teamId || teams[0]?.id || ''
+    const did = deptId || departments.find(d => d.team_id === tid)?.id || ''
+    if (!tid || !did) return
+    healedRef.current = true
+    setTeamId(tid)
+    setDeptId(did)
+    onMove(tid, did)
+    // onMove is inline in parent — intentionally omitted from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsTeam, disabled, teamId, deptId, teams, departments])
+
   const showInvite = !person.invite_blocked && !hasLoggedIn
   const canEditCard = person.role !== 'pending'
+  const effectiveDeptId = deptId || depts[0]?.id || ''
 
   function autoMove(nextTeam: string, nextDept: string) {
     if (!nextTeam || !nextDept || disabled) return
@@ -491,8 +525,38 @@ function PersonCard({
     }, 400)
   }
 
+  function changeRole(next: UserRole) {
+    if (next === 'employee' || next === 'sub_admin') {
+      const tid = teamId || teams[0]?.id || ''
+      const did =
+        effectiveDeptId || departments.find(d => d.team_id === tid)?.id || ''
+      if (!tid || !did) {
+        setEditing(true)
+        return
+      }
+      setTeamId(tid)
+      setDeptId(did)
+      onSetRole(
+        next,
+        tid,
+        did,
+        next === 'sub_admin' ? deputyTeams.filter(id => id !== tid) : undefined
+      )
+      return
+    }
+    onSetRole(next)
+  }
+
   return (
-    <div className={`glass-card relative p-4 ${showInvite ? 'pb-12' : ''} ${!hasLoggedIn && person.role !== 'pending' ? 'ring-1 ring-amber-200/80' : ''}`}>
+    <div
+      className={`glass-card relative p-4 ${showInvite ? 'pb-12' : ''} ${
+        needsTeam
+          ? 'ring-1 ring-amber-400/90'
+          : !hasLoggedIn && person.role !== 'pending'
+            ? 'ring-1 ring-amber-200/80'
+            : ''
+      }`}
+    >
       <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-3">
           <UserAvatar url={person.avatar_url} name={person.full_name || person.email} size={40} />
@@ -520,10 +584,24 @@ function PersonCard({
           )}
           <p className="mt-1 text-xs text-muted-foreground">
             {ROLE_LABEL[person.role]} · {membershipLabel}
+            {needsTeam && (
+              <span className="ml-1 font-medium text-amber-700">· не в команді</span>
+            )}
             {!hasLoggedIn && person.role !== 'pending' && (
-              <span className="ml-1 text-amber-700">· ще не входив</span>
+              <span className="ml-1 inline-flex items-center gap-0.5 text-amber-700">
+                <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                ще не входив
+              </span>
             )}
           </p>
+          {needsTeam && (
+            <p className="mt-1.5 text-[11px] font-medium text-amber-800">
+              Немає запису в команді — оберіть відділ нижче або натисніть «Додати в команду». Без цього
+              людину не видно в плані.
+            </p>
+          )}
           {person.role !== 'pending' && (
             <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5">
               <label className="flex items-center gap-1.5 text-xs text-foreground">
@@ -601,7 +679,8 @@ function PersonCard({
               </div>
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-medium text-muted-foreground">Відділ</label>
-                <select value={deptId || depts[0]?.id || ''} onChange={e => setDeptId(e.target.value)} className="rounded-lg border border-input bg-white px-2 py-1.5 text-xs">
+                <select value={effectiveDeptId} onChange={e => setDeptId(e.target.value)} className="rounded-lg border border-input bg-white px-2 py-1.5 text-xs">
+                  <option value="">— оберіть —</option>
                   {depts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </div>
@@ -648,10 +727,11 @@ function PersonCard({
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-medium text-muted-foreground">Відділ у плані</label>
                 <select
-                  value={deptId || depts[0]?.id || ''}
+                  value={effectiveDeptId}
                   onChange={e => setDeptId(e.target.value)}
                   className="rounded-lg border border-input bg-white px-2 py-1.5 text-xs"
                 >
+                  <option value="">— оберіть —</option>
                   {depts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </div>
@@ -661,9 +741,9 @@ function PersonCard({
             disabled={
               disabled ||
               (role === 'employee'
-                ? !teamId || !(deptId || depts[0]?.id)
+                ? !teamId || !effectiveDeptId
                 : role === 'sub_admin'
-                  ? !(extraTeams.length || teamId) || !(deptId || depts[0]?.id)
+                  ? !(extraTeams.length || teamId) || !effectiveDeptId
                   : false)
             }
             onClick={() => {
@@ -671,7 +751,7 @@ function PersonCard({
               onApprove(
                 role,
                 role === 'sub_admin' ? teamId || teamsForDeputy[0] : teamId,
-                deptId || depts[0]?.id || '',
+                effectiveDeptId,
                 role === 'sub_admin' ? teamsForDeputy.filter(id => id !== (teamId || teamsForDeputy[0])) : undefined
               )
             }}
@@ -685,7 +765,11 @@ function PersonCard({
       {editing && person.role === 'employee' && (
         <div className="mt-3 rounded-xl border border-border/40 bg-white/30 p-3">
           <p className="mb-1 text-xs font-medium text-foreground">Приналежність до команди</p>
-          <p className="mb-2 text-[11px] text-muted-foreground">Зміни зберігаються одразу.</p>
+          <p className="mb-2 text-[11px] text-muted-foreground">
+            {needsTeam
+              ? 'Людина ще не в команді — оберіть відділ і натисніть «Додати в команду».'
+              : 'Зміни зберігаються одразу.'}
+          </p>
           <div className="grid gap-2 sm:grid-cols-2">
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium text-muted-foreground">Команда</label>
@@ -697,7 +781,7 @@ function PersonCard({
                   const nextDepts = departments.filter(d => d.team_id === tid)
                   const did = nextDepts[0]?.id || ''
                   setDeptId(did)
-                  if (did) autoMove(tid, did)
+                  if (did && currentMembership) autoMove(tid, did)
                 }}
                 className="rounded-lg border border-input bg-white px-2 py-1.5 text-xs"
               >
@@ -707,22 +791,37 @@ function PersonCard({
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium text-muted-foreground">Відділ</label>
               <select
-                value={deptId || depts[0]?.id || ''}
+                value={effectiveDeptId}
                 onChange={e => {
                   const did = e.target.value
                   setDeptId(did)
-                  autoMove(teamId, did)
+                  if (currentMembership) autoMove(teamId, did)
                 }}
                 className="rounded-lg border border-input bg-white px-2 py-1.5 text-xs"
               >
+                <option value="">— оберіть —</option>
                 {depts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
             </div>
           </div>
+          {needsTeam && (
+            <button
+              type="button"
+              disabled={disabled || !teamId || !effectiveDeptId}
+              onClick={() => onMove(teamId, effectiveDeptId)}
+              className="tap-btn mt-3 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-40"
+            >
+              Додати в команду
+            </button>
+          )}
           {isSuperAdmin && (
             <div className="mt-2 flex flex-col gap-1">
               <label className="text-xs font-medium text-muted-foreground">Роль</label>
-              <select defaultValue={person.role} onChange={e => onSetRole(e.target.value as UserRole)} className="max-w-xs rounded-lg border border-input bg-white px-2 py-1.5 text-xs">
+              <select
+                defaultValue={person.role}
+                onChange={e => changeRole(e.target.value as UserRole)}
+                className="max-w-xs rounded-lg border border-input bg-white px-2 py-1.5 text-xs"
+              >
                 <option value="employee">Працівник</option>
                 <option value="sub_admin">Заступник</option>
                 <option value="super_admin">Шеф</option>
@@ -768,7 +867,7 @@ function PersonCard({
                     const nextDepts = departments.filter(d => d.team_id === tid)
                     const did = nextDepts[0]?.id || ''
                     setDeptId(did)
-                    if (did) autoMove(tid, did)
+                    if (did && currentMembership) autoMove(tid, did)
                   }}
                   className="rounded-lg border border-input bg-white px-2 py-1.5 text-xs"
                 >
@@ -778,24 +877,39 @@ function PersonCard({
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-medium text-muted-foreground">Відділ</label>
                 <select
-                  value={deptId || depts[0]?.id || ''}
+                  value={effectiveDeptId}
                   onChange={e => {
                     const did = e.target.value
                     setDeptId(did)
-                    autoMove(teamId, did)
+                    if (currentMembership) autoMove(teamId, did)
                   }}
                   className="rounded-lg border border-input bg-white px-2 py-1.5 text-xs"
                 >
+                  <option value="">— оберіть —</option>
                   {depts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </div>
             </div>
+            {needsTeam && (
+              <button
+                type="button"
+                disabled={disabled || !teamId || !effectiveDeptId}
+                onClick={() => onMove(teamId, effectiveDeptId)}
+                className="tap-btn mt-3 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-40"
+              >
+                Додати в команду
+              </button>
+            )}
           </div>
 
           {isSuperAdmin && (
             <div className="mt-3 flex flex-col gap-1">
               <label className="text-xs font-medium text-muted-foreground">Роль</label>
-              <select defaultValue={person.role} onChange={e => onSetRole(e.target.value as UserRole)} className="max-w-xs rounded-lg border border-input bg-white px-2 py-1.5 text-xs">
+              <select
+                defaultValue={person.role}
+                onChange={e => changeRole(e.target.value as UserRole)}
+                className="max-w-xs rounded-lg border border-input bg-white px-2 py-1.5 text-xs"
+              >
                 <option value="employee">Працівник</option>
                 <option value="sub_admin">Заступник</option>
                 <option value="super_admin">Шеф</option>
@@ -811,7 +925,7 @@ function PersonCard({
             <label className="text-xs font-medium text-muted-foreground">Роль</label>
             <select
               defaultValue={person.role}
-              onChange={e => onSetRole(e.target.value as UserRole)}
+              onChange={e => changeRole(e.target.value as UserRole)}
               className="max-w-xs rounded-lg border border-input bg-white px-2 py-1.5 text-xs"
             >
               <option value="employee">Працівник</option>
@@ -820,6 +934,7 @@ function PersonCard({
             </select>
             <p className="mt-1 text-[11px] text-muted-foreground">
               Змінити роль шефа можна будь-коли. Себе зняти з шефа не можна — зробіть це з іншого акаунта шефа.
+              Для працівника/заступника спочатку потрібні команда й відділ.
             </p>
           </div>
         </div>

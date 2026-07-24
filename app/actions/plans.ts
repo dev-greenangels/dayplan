@@ -1,17 +1,16 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAdmin, requireUser, canManageTeam, canEditTeamTasks, isBoss } from '@/lib/auth'
+import { requireAdmin, requireUser, canManageTeam, canEditTeamTasks } from '@/lib/auth'
 import type { Profile } from '@/lib/types'
 import type { createClient } from '@/lib/supabase/server'
 
-/** Boss always; deputy only if can_edit_tasks and team plan is unlocked. */
+/** Deputy/boss can edit planned/shift only when team plan is unlocked. */
 async function allowEditingPlanTasks(
   supabase: Awaited<ReturnType<typeof createClient>>,
   profile: Profile,
   teamId: string
 ): Promise<boolean> {
-  if (isBoss(profile.role)) return true
   if (!(await canEditTeamTasks(supabase, profile, teamId))) return false
   const { data } = await supabase
     .from('teams')

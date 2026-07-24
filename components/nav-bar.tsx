@@ -10,6 +10,7 @@ import { isDeputyOrBoss, ROLE_LABEL } from '@/lib/roles'
 import { usePush } from '@/components/push-provider'
 import AccountSettingsModal, { type AccountMembership } from '@/components/account-settings-modal'
 import UserAvatar from '@/components/user-avatar'
+import { usePlanChromeLock } from '@/components/plan-chrome-lock'
 
 interface NavBarProps {
   profile: Profile
@@ -34,6 +35,7 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
   const pathname = usePathname()
   const headerRef = useRef<HTMLElement>(null)
   const { status: pushStatus, error: pushError, enable: enablePush } = usePush()
+  const { chromeBlocked } = usePlanChromeLock()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [localProfile, setLocalProfile] = useState(profile)
 
@@ -85,8 +87,14 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
           <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:max-w-none sm:flex-initial sm:shrink">
             <Link
               href={isAdmin ? '/admin' : '/dashboard'}
-              className="tap-btn hidden shrink-0 items-center gap-2 sm:flex"
-              title="На головну"
+              onClick={e => {
+                if (chromeBlocked) e.preventDefault()
+              }}
+              aria-disabled={chromeBlocked}
+              className={`tap-btn hidden shrink-0 items-center gap-2 sm:flex ${
+                chromeBlocked ? 'pointer-events-none opacity-40' : ''
+              }`}
+              title={chromeBlocked ? 'Спочатку розблокуйте план' : 'На головну'}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -100,9 +108,13 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
             </Link>
             <button
               type="button"
-              onClick={() => setSettingsOpen(true)}
-              className="tap-btn flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md px-1 py-0.5 text-left hover:bg-black/5 sm:hidden"
-              title="Налаштування акаунта"
+              onClick={() => {
+                if (chromeBlocked) return
+                setSettingsOpen(true)
+              }}
+              disabled={chromeBlocked}
+              className="tap-btn flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md px-1 py-0.5 text-left hover:bg-black/5 disabled:opacity-40 sm:hidden"
+              title={chromeBlocked ? 'Спочатку розблокуйте план' : 'Налаштування акаунта'}
             >
               <span className="shrink-0">
                 <UserAvatar
@@ -133,11 +145,18 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
                 <Link
                   key={link.href}
                   href={link.href}
+                  onClick={e => {
+                    if (chromeBlocked) e.preventDefault()
+                  }}
+                  aria-disabled={chromeBlocked}
                   className={`tap-btn rounded-md px-3 py-1.5 text-sm font-medium transition-colors sm:px-4 ${
-                    active
-                      ? 'bg-primary/12 text-primary'
-                      : 'text-muted-foreground hover:bg-black/5 hover:text-foreground'
+                    chromeBlocked
+                      ? 'pointer-events-none opacity-40'
+                      : active
+                        ? 'bg-primary/12 text-primary'
+                        : 'text-muted-foreground hover:bg-black/5 hover:text-foreground'
                   }`}
+                  title={chromeBlocked ? 'Спочатку розблокуйте план' : undefined}
                 >
                   {link.label}
                 </Link>
@@ -148,9 +167,13 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
           <div className="flex shrink-0 items-center gap-0 sm:gap-2">
             <button
               type="button"
-              onClick={() => setSettingsOpen(true)}
-              className="tap-btn hidden items-center gap-2 rounded-md px-2 py-1 hover:bg-black/5 sm:flex"
-              title="Налаштування акаунта"
+              onClick={() => {
+                if (chromeBlocked) return
+                setSettingsOpen(true)
+              }}
+              disabled={chromeBlocked}
+              className="tap-btn hidden items-center gap-2 rounded-md px-2 py-1 hover:bg-black/5 disabled:opacity-40 sm:flex"
+              title={chromeBlocked ? 'Спочатку розблокуйте план' : 'Налаштування акаунта'}
             >
               <UserAvatar
                 url={localProfile.avatar_url}
@@ -174,13 +197,19 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
               <button
                 type="button"
                 onClick={() => {
+                  if (chromeBlocked) return
                   if (pushStatus === 'subscribed' || pushStatus === 'denied' || pushStatus === 'unavailable') {
                     setSettingsOpen(true)
                     return
                   }
                   void enablePush()
                 }}
+                disabled={chromeBlocked && (pushStatus === 'subscribed' || pushStatus === 'denied' || pushStatus === 'unavailable')}
                 className={`tap-btn rounded-lg p-2 sm:p-2 ${
+                  chromeBlocked && (pushStatus === 'subscribed' || pushStatus === 'denied' || pushStatus === 'unavailable')
+                    ? 'pointer-events-none opacity-40'
+                    : ''
+                } ${
                   pushStatus === 'subscribed'
                     ? 'text-primary'
                     : pushStatus === 'need-permission'

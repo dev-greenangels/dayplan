@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
+import startupImages from '../public/splash/startup-images.json'
 
 const inter = Inter({ subsets: ['latin', 'cyrillic'] })
 
@@ -18,6 +19,7 @@ export const metadata: Metadata = {
     capable: true,
     title: 'PlanDay-GA',
     statusBarStyle: 'default',
+    startupImage: startupImages,
   },
   icons: {
     icon: [
