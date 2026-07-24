@@ -52,13 +52,20 @@ export const getSessionProfile = cache(async (): Promise<SessionContext | null> 
 
   if (!profile) return null
 
-  // Optional last_sign_in_at — ignore failures (column may lag schema cache)
+  // Optional columns — ignore failures if migrations lag schema cache
   if (user.last_sign_in_at) {
     void supabase
       .from('profiles')
-      .update({ last_sign_in_at: user.last_sign_in_at })
+      .update({
+        last_sign_in_at: user.last_sign_in_at,
+        invite_blocked: true,
+      })
       .eq('id', user.id)
-    profile = { ...profile, last_sign_in_at: user.last_sign_in_at }
+    profile = {
+      ...profile,
+      last_sign_in_at: user.last_sign_in_at,
+      invite_blocked: true,
+    }
   }
 
   return { supabase, user, profile }

@@ -108,8 +108,10 @@ export default function PeopleManager({
     setMsg(null)
     startTransition(async () => {
       const res = await fn()
-      if (res.error) setMsg('Помилка: ' + res.error)
-      else if (res.warning) {
+      if (res.error) {
+        setMsg('Помилка: ' + res.error)
+        if (res.inviteBlocked) router.refresh()
+      } else if (res.warning) {
         setMsg(res.warning)
         router.refresh()
       } else {

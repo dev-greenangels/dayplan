@@ -1,6 +1,55 @@
 import { requireAdmin, getManagedTeamIds, isBoss } from '@/lib/auth'
+import { createAdminClient } from '@/lib/supabase/admin'
 import type { Profile } from '@/lib/types'
 import PeopleManager from './people-manager'
+
+const SELECT_FULL =
+  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked, last_sign_in_at'
+const SELECT_INVITE =
+  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked'
+const SELECT_BASE = 'id, full_name, email, role, department, created_at'
+
+async function loadProfiles(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  client: { from: (t: string) => any },
+  opts?: { ids?: string[]; role?: string }
+): Promise<Profile[]> {
+  const run = async (cols: string) => {
+    let q = client.from('profiles').select(cols).order('created_at', { ascending: false })
+    if (opts?.ids) q = q.in('id', opts.ids)
+    if (opts?.role) q = q.eq('role', opts.role)
+    return q
+  }
+
+  for (const cols of [SELECT_FULL, SELECT_INVITE, SELECT_BASE]) {
+    const { data, error } = await run(cols)
+    if (!error) return (data ?? []) as Profile[]
+    console.warn('[people] select failed, trying narrower columns:', error.message)
+  }
+  return []
+}
+
+/** Backfill invite_blocked for people who already signed in but flag is still false. */
+async function syncInviteBlocked(people: Profile[]): Promise<Profile[]> {
+  const needBlock = people.filter(p => p.last_sign_in_at && !p.invite_blocked)
+  if (needBlock.length === 0) {
+    return people.map(p => ({
+      ...p,
+      invite_blocked: !!(p.invite_blocked || p.last_sign_in_at),
+    }))
+  }
+  try {
+    const admin = createAdminClient()
+    const ids = needBlock.map(p => p.id)
+    await admin.from('profiles').update({ invite_blocked: true }).in('id', ids)
+  } catch (e) {
+    console.warn('[people] invite_blocked backfill skipped', e)
+  }
+  return people.map(p => ({
+    ...p,
+    invite_blocked: !!(p.invite_blocked || p.last_sign_in_at),
+  }))
+}
 
 export default async function PeoplePage() {
   const { supabase, profile } = await requireAdmin()
@@ -41,38 +90,26 @@ export default async function PeoplePage() {
   const memberIds = new Set(members.map(m => m.user_id))
   memberIds.add(profile.id)
 
-  const profileSelect =
-    'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked, last_sign_in_at'
-
   let filteredPeople: Profile[]
 
   if (isBoss(profile.role)) {
-    const { data: people } = await supabase
-      .from('profiles')
-      .select(profileSelect)
-      .order('created_at', { ascending: false })
-    filteredPeople = (people ?? []) as Profile[]
+    try {
+      filteredPeople = await loadProfiles(createAdminClient())
+    } catch (e) {
+      console.error('[people] admin client failed, falling back to session client', e)
+      filteredPeople = await loadProfiles(supabase)
+    }
   } else {
-    const [{ data: pending }, { data: scoped }] = await Promise.all([
-      supabase
-        .from('profiles')
-        .select(profileSelect)
-        .eq('role', 'pending')
-        .order('created_at', { ascending: false }),
-      memberIds.size > 0
-        ? supabase
-            .from('profiles')
-            .select(profileSelect)
-            .in('id', [...memberIds])
-            .order('created_at', { ascending: false })
-        : Promise.resolve({ data: [] as Profile[] }),
+    const [pending, scoped] = await Promise.all([
+      loadProfiles(supabase, { role: 'pending' }),
+      memberIds.size > 0 ? loadProfiles(supabase, { ids: [...memberIds] }) : Promise.resolve([] as Profile[]),
     ])
     const byId = new Map<string, Profile>()
-    for (const p of [...(pending ?? []), ...(scoped ?? [])] as Profile[]) {
-      byId.set(p.id, p)
-    }
+    for (const p of [...pending, ...scoped]) byId.set(p.id, p)
     filteredPeople = [...byId.values()]
   }
+
+  filteredPeople = await syncInviteBlocked(filteredPeople)
 
   const loggedInIds = filteredPeople.filter(p => p.last_sign_in_at).map(p => p.id)
 

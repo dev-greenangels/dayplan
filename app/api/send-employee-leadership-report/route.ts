@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getApiSession, isBoss } from '@/lib/auth'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { isMailConfigured, sendAppMail } from '@/lib/mail'
-import { getTeamLeaderUserIds, isPushConfigured, sendPushToUserIds } from '@/lib/push'
+import { isPushConfigured, sendPushToUserIds } from '@/lib/push'
 import { formatUkDate } from '@/lib/format-date'
 import {
   buildDeptGroupedPlanTableHtml,
@@ -66,9 +67,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Заповніть своє поле «Виконано» перед відправкою' }, { status: 400 })
     }
 
+    // Service role: employees cannot read other profiles' emails via RLS
+    const admin = createAdminClient()
     const [{ data: teamAdmins }, { data: superAdmins }] = await Promise.all([
-      supabase.from('team_admins').select('user_id, profile:profiles(id, email)').eq('team_id', teamId),
-      supabase.from('profiles').select('id, email').eq('role', 'super_admin'),
+      admin.from('team_admins').select('user_id, profile:profiles(id, email)').eq('team_id', teamId),
+      admin.from('profiles').select('id, email').eq('role', 'super_admin'),
     ])
 
     const leaders = [
@@ -80,7 +83,7 @@ export async function POST(req: NextRequest) {
       }),
     ]
     const emails = [...new Set(leaders.map(l => l.email).filter(Boolean))] as string[]
-    const leaderIds = await getTeamLeaderUserIds(supabase, teamId)
+    const leaderIds = [...new Set(leaders.map(l => l.id).filter(Boolean))] as string[]
 
     const dateStr = formatUkDate(date)
     const fromName = profile.full_name || user.email
@@ -88,8 +91,25 @@ export async function POST(req: NextRequest) {
     let emailSent = 0
     let pushSent = 0
 
-    if (emails.length > 0 && isMailConfigured()) {
-      const { data: teamColumns } = await supabase
+    const mailOk = isMailConfigured()
+    const pushOk = isPushConfigured()
+
+    if (emails.length === 0 && leaderIds.length === 0) {
+      return NextResponse.json(
+        { error: 'Немає керівництва з email (додайте Шефа або Заступника команди)' },
+        { status: 400 }
+      )
+    }
+
+    if (!mailOk && !pushOk) {
+      return NextResponse.json(
+        { error: 'На сервері не налаштовано email і push (GMAIL / VAPID)' },
+        { status: 400 }
+      )
+    }
+
+    if (emails.length > 0 && mailOk) {
+      const { data: teamColumns } = await admin
         .from('team_columns')
         .select('key, label, is_system, hidden')
         .eq('team_id', teamId)
@@ -122,15 +142,24 @@ export async function POST(req: NextRequest) {
       emailSent = emails.length
     }
 
-    if (leaderIds.length > 0 && isPushConfigured()) {
-      pushSent = await sendPushToUserIds(supabase, leaderIds, {
+    if (leaderIds.length > 0 && pushOk) {
+      // sendPushToUserIds uses caller supabase — pass admin so subscriptions are readable
+      pushSent = await sendPushToUserIds(admin as Parameters<typeof sendPushToUserIds>[0], leaderIds, {
         title: 'Звіт керівництву',
         body: `${fromName} · ${team.name} · ${dateStr}`,
       })
     }
 
     if (emailSent === 0 && pushSent === 0) {
-      return NextResponse.json({ error: 'Не вдалося надіслати (немає email/push у керівництва)' }, { status: 400 })
+      const hints: string[] = []
+      if (mailOk && emails.length === 0) hints.push('у керівництва немає email')
+      if (!mailOk) hints.push('Gmail не налаштовано')
+      if (pushOk && pushSent === 0) hints.push('немає push-підписок у керівництва')
+      if (!pushOk) hints.push('push не налаштовано')
+      return NextResponse.json(
+        { error: `Не вдалося надіслати (${hints.join('; ') || 'немає каналів'})` },
+        { status: 400 }
+      )
     }
 
     return NextResponse.json({

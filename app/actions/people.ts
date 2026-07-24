@@ -182,6 +182,7 @@ export async function createPerson(opts: {
       .maybeSingle()
 
     let userId = existingProfile?.id as string | undefined
+    let alreadySignedIn = false
 
     if (!userId) {
       const { data, error } = await admin.auth.admin.createUser({
@@ -192,6 +193,9 @@ export async function createPerson(opts: {
       if (error) return { error: error.message }
       if (!data.user) return { error: 'Не вдалося створити користувача' }
       userId = data.user.id
+    } else {
+      const { data: authUser } = await admin.auth.admin.getUserById(userId)
+      alreadySignedIn = !!authUser.user?.last_sign_in_at
     }
 
     await admin.from('profiles').upsert({
@@ -200,6 +204,9 @@ export async function createPerson(opts: {
       email,
       role: opts.role,
       department: '',
+      ...(alreadySignedIn
+        ? { invite_blocked: true, last_sign_in_at: new Date().toISOString() }
+        : {}),
     }, { onConflict: 'id' })
 
     if (opts.role === 'employee') {
@@ -226,6 +233,14 @@ export async function createPerson(opts: {
     }
 
     if (opts.sendInvite) {
+      if (alreadySignedIn) {
+        revalidatePath('/admin/people')
+        return {
+          success: true,
+          userId,
+          warning: 'Працівника додано. Запрошення не потрібне — людина вже входила в систему.',
+        }
+      }
       const invite = await sendLoginInviteEmail(email, fullName)
       if (invite.error) {
         revalidatePath('/admin/people')
@@ -275,6 +290,15 @@ export async function resendInvite(email: string) {
         await admin.auth.admin.updateUserById(prof.id, {
           app_metadata: { ...(authUser.user.app_metadata ?? {}), invite_blocked: true },
         })
+        await admin
+          .from('profiles')
+          .update({
+            invite_blocked: true,
+            ...(authUser.user.last_sign_in_at
+              ? { last_sign_in_at: authUser.user.last_sign_in_at }
+              : {}),
+          })
+          .eq('id', prof.id)
         revalidatePath('/admin/people')
         return { error: 'Користувач уже має доступ — запрошення не потрібне', inviteBlocked: true }
       }
@@ -294,6 +318,15 @@ export async function resendInvite(email: string) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Помилка'
     if (message.toLowerCase().includes('already')) {
+      // Best-effort: hide invite button if we can resolve the profile
+      try {
+        const admin = createAdminClient()
+        const normalized = email.trim().toLowerCase()
+        await admin
+          .from('profiles')
+          .update({ invite_blocked: true })
+          .eq('email', normalized)
+      } catch { /* ignore */ }
       return { error: 'Обліковий запис уже існує — запрошення не потрібне', inviteBlocked: true }
     }
     return { error: message }
