@@ -90,6 +90,49 @@
 }
 
 @layer components {
+  .ios-launch-splash {
+    display: none;
+  }
+  @media (display-mode: standalone) {
+    .ios-launch-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #d4edda 0%, #e8f5e9 40%, #c8e6c9 100%);
+      opacity: 1;
+      transition: opacity 0.4s ease;
+    }
+    .ios-launch-splash-leaving {
+      pointer-events: none;
+      opacity: 0;
+    }
+    .ios-launch-splash-logo {
+      width: min(42vw, 220px);
+      height: auto;
+      object-fit: contain;
+      filter: drop-shadow(0 4px 8px rgb(45 106 79 / 18%));
+    }
+    .ios-launch-splash-title {
+      margin-top: 1.4rem;
+      color: #2d6a4f;
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: clamp(1.6rem, 7vw, 2.3rem);
+      font-weight: 700;
+      line-height: 1;
+      text-shadow: 0 2px 5px rgb(45 106 79 / 28%);
+    }
+    .ios-launch-splash-subtitle {
+      margin-top: 0.7rem;
+      color: #4a7c59;
+      font-size: clamp(1rem, 4.5vw, 1.4rem);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+  }
   .glass-card {
     background: var(--glass-bg);
     backdrop-filter: blur(12px);

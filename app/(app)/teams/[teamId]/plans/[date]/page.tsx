@@ -2,6 +2,7 @@ import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
 import { requireUser, getTeamAccess } from '@/lib/auth'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { todayISO } from '@/lib/format-date'
 import TeamPlanBoard from './team-plan-board'
 import type { Department, Profile, TaskRow, Team, TeamColumn } from '@/lib/types'
 
@@ -50,25 +51,21 @@ export default async function TeamPlanPage({ params }: Props) {
 
   let memberPlanDates: string[] = []
   if (!isAdmin) {
-    const { data: myPlanRows } = await supabase
-      .from('task_rows')
-      .select('day_plans!inner(plan_date, team_id)')
-      .eq('employee_id', user.id)
-      .eq('day_plans.team_id', teamId)
+    const { data: myPlanDays } = await supabase
+      .from('day_plans')
+      .select('plan_date, task_rows!inner(employee_id)')
+      .eq('team_id', teamId)
+      .eq('task_rows.employee_id', user.id)
+      .order('plan_date', { ascending: true })
+
     memberPlanDates = [
-      ...new Set(
-        (myPlanRows ?? [])
-          .map(r => {
-            const dp = r.day_plans as { plan_date?: string } | { plan_date?: string }[] | null
-            const row = Array.isArray(dp) ? dp[0] : dp
-            return row?.plan_date
-          })
-          .filter((d): d is string => !!d)
-      ),
-    ].sort()
-    if (!memberPlanDates.includes(date)) {
-      if (memberPlanDates.length === 0) redirect('/dashboard')
-      const today = new Date().toISOString().slice(0, 10)
+      ...new Set((myPlanDays ?? []).map(r => r.plan_date).filter(Boolean)),
+    ]
+
+    // Stay on the requested day even if empty (no redirect loop with /dashboard).
+    // Only jump when they already have other plan days and opened a day they are not on.
+    if (memberPlanDates.length > 0 && !memberPlanDates.includes(date)) {
+      const today = todayISO()
       const pastOrToday = memberPlanDates.filter(d => d <= today)
       const target = pastOrToday.length
         ? pastOrToday[pastOrToday.length - 1]

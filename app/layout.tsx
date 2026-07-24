@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
 import startupImages from '../public/splash/startup-images.json'
+import LaunchSplash from '@/components/launch-splash'
 
 const inter = Inter({ subsets: ['latin', 'cyrillic'] })
 
@@ -68,8 +69,21 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="uk" className="bg-background" style={{ fontFamily: inter.style.fontFamily }}>
-      <body className="antialiased font-sans">
+    <html
+      lang="uk"
+      className="bg-background"
+      style={{
+        fontFamily: inter.style.fontFamily,
+        background: 'linear-gradient(135deg, #d4edda 0%, #e8f5e9 40%, #c8e6c9 100%)',
+      }}
+    >
+      <body
+        className="antialiased font-sans"
+        style={{
+          background: 'linear-gradient(135deg, #d4edda 0%, #e8f5e9 40%, #c8e6c9 100%)',
+        }}
+      >
+        <LaunchSplash />
         {children}
       </body>
     </html>

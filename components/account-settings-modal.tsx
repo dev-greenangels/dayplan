@@ -12,6 +12,8 @@ import { ROLE_LABEL } from '@/lib/roles'
 export type AccountMembership = {
   teamName: string | null
   departmentName: string | null
+  teamId?: string | null
+  workMode?: string | null
 } | null
 
 export default function AccountSettingsModal({

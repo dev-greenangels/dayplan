@@ -15,11 +15,19 @@ import { usePlanChromeLock } from '@/components/plan-chrome-lock'
 interface NavBarProps {
   profile: Profile
   membership?: AccountMembership
+  /** Home for employees — shared team plan URL or /dashboard */
+  employeeHome?: string
 }
 
 function isActive(pathname: string, href: string) {
   if (href === '/admin') {
     return pathname === '/admin' || pathname.startsWith('/teams/')
+  }
+  if (href.startsWith('/teams/')) {
+    return pathname.startsWith('/teams/')
+  }
+  if (href === '/dashboard' || href.startsWith('/dashboard')) {
+    return pathname === '/dashboard' || pathname.startsWith('/dashboard')
   }
   return pathname === href || pathname.startsWith(href + '/')
 }
@@ -30,7 +38,11 @@ function mobileRoleTitle(role: Profile['role']) {
   return ROLE_LABEL[role] ?? 'Працівник'
 }
 
-export default function NavBar({ profile, membership = null }: NavBarProps) {
+export default function NavBar({
+  profile,
+  membership = null,
+  employeeHome = '/dashboard',
+}: NavBarProps) {
   const router = useRouter()
   const pathname = usePathname()
   const headerRef = useRef<HTMLElement>(null)
@@ -68,13 +80,14 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
   const isAdmin = isDeputyOrBoss(localProfile.role)
   const mobileTitle = mobileRoleTitle(localProfile.role)
   const displayName = localProfile.full_name?.trim() || localProfile.email || 'Користувач'
+  const homeHref = isAdmin ? '/admin' : employeeHome
 
   const links = isAdmin
     ? [
         { href: '/admin', label: 'Команди' },
         { href: '/admin/people', label: 'Люди' },
       ]
-    : [{ href: '/dashboard', label: 'Мій план' }]
+    : [{ href: employeeHome, label: 'Мій план' }]
 
   return (
     <>
@@ -86,7 +99,8 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
         <div className="boty-glass mx-auto flex h-14 min-w-0 max-w-[1600px] items-center justify-between gap-1.5 overflow-hidden rounded-lg pl-3 pr-1.5 sm:gap-2 sm:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:max-w-none sm:flex-initial sm:shrink">
             <Link
-              href={isAdmin ? '/admin' : '/dashboard'}
+              href={homeHref}
+              prefetch={false}
               onClick={e => {
                 if (chromeBlocked) e.preventDefault()
               }}
@@ -145,6 +159,7 @@ export default function NavBar({ profile, membership = null }: NavBarProps) {
                 <Link
                   key={link.href}
                   href={link.href}
+                  prefetch={false}
                   onClick={e => {
                     if (chromeBlocked) e.preventDefault()
                   }}
