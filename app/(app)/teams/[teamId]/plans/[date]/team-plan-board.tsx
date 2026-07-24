@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Department, Profile, TaskRow, Team, TeamColumn } from '@/lib/types'
 import { addPlanMembers, copyPlanFromPreviousDay, deleteDayPlan, removePlanMember, saveTeamPlan, updateTaskRowFields } from '@/app/actions/plans'
@@ -134,13 +134,15 @@ export default function TeamPlanBoard({
   const [addOpen, setAddOpen] = useState(false)
   const [sendOpen, setSendOpen] = useState(false)
   const [digestOpen, setDigestOpen] = useState(false)
-  const [employeeReportOpen, setEmployeeReportOpen] = useState(false)
   const [employeeReportBusy, setEmployeeReportBusy] = useState(false)
+  const [employeeReportSentAt, setEmployeeReportSentAt] = useState<string | null>(null)
+  const [datePickerOpen, setDatePickerOpen] = useState(false)
+  const [pickerMonth, setPickerMonth] = useState(date) // any day in visible month
   const [tasksLocked, setTasksLocked] = useState(!canEditTasks)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [activePlanId, setActivePlanId] = useState(planId)
   const dayStripRef = useRef<HTMLDivElement>(null)
-  const dateInputRef = useRef<HTMLInputElement>(null)
+  const datePickerRef = useRef<HTMLDivElement>(null)
   const dirtyRef = useRef(false)
   const [dirty, setDirty] = useState(false)
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -156,6 +158,41 @@ export default function TeamPlanBoard({
   const showSendWorkers = team.show_send_worker_emails !== false
   const showSendLeadership = team.show_send_leadership !== false
   const allowEditTasks = canEditTasks && !tasksLocked
+  const employeeReportStorageKey = `emp-report:${team.id}:${date}:${currentUserId}`
+
+  useEffect(() => {
+    try {
+      setEmployeeReportSentAt(localStorage.getItem(employeeReportStorageKey))
+    } catch {
+      setEmployeeReportSentAt(null)
+    }
+  }, [employeeReportStorageKey])
+
+  useEffect(() => {
+    if (datePickerOpen) setPickerMonth(date)
+  }, [datePickerOpen, date])
+
+  useEffect(() => {
+    if (!datePickerOpen) return
+    const onPointer = (e: MouseEvent | TouchEvent) => {
+      const root = datePickerRef.current
+      if (!root) return
+      if (e.target instanceof Node && !root.contains(e.target)) {
+        setDatePickerOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDatePickerOpen(false)
+    }
+    document.addEventListener('mousedown', onPointer)
+    document.addEventListener('touchstart', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onPointer)
+      document.removeEventListener('touchstart', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [datePickerOpen])
 
   const visibleCols = useMemo(
     () => columns.filter(c => !c.hidden).sort((a, b) => a.sort_order - b.sort_order),
@@ -283,6 +320,8 @@ export default function TeamPlanBoard({
   const hasAnyPlanned = localRows.some(r => r.planned.trim().length > 0)
   const hasAnyCompleted = localRows.some(r => r.completed.trim().length > 0)
   const canSendDigest = hasAnyPlanned || hasAnyCompleted
+  const myRow = localRows.find(r => r.employee_id === currentUserId)
+  const canSendMyReport = !!(myRow && myRow.completed.trim().length > 0)
 
   useEffect(() => {
     const el = dayStripRef.current?.querySelector<HTMLElement>('[data-selected="true"]')
@@ -422,25 +461,35 @@ export default function TeamPlanBoard({
     setDigestSending(false)
   }
 
-  async function sendEmployeeLeadershipReport(scope: 'mine' | 'all') {
+  async function sendEmployeeLeadershipReport() {
     setEmployeeReportBusy(true)
     setMsg(null)
     try {
       if (isAdmin) await flushSave()
+      else if (myRow?.id) {
+        await updateTaskRowFields(myRow.id, {
+          completed: myRow.completed,
+          notes: myRow.notes,
+        })
+      }
       const res = await fetch('/api/send-employee-leadership-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teamId: team.id, date, scope }),
+        body: JSON.stringify({ teamId: team.id, date }),
       })
       const json = await res.json()
       if (!res.ok || json.error) {
         setMsg('Помилка: ' + (json.error || `HTTP ${res.status}`))
       } else {
+        const sentAt = (json.sent_at as string) || new Date().toISOString()
+        setEmployeeReportSentAt(sentAt)
+        try {
+          localStorage.setItem(employeeReportStorageKey, sentAt)
+        } catch { /* ignore */ }
         const parts: string[] = []
         if (json.emailSent) parts.push(`email: ${json.emailSent}`)
         if (json.pushSent) parts.push(`push: ${json.pushSent}`)
         setMsg(parts.length ? `Звіт надіслано (${parts.join(', ')})` : 'Звіт надіслано')
-        setEmployeeReportOpen(false)
       }
     } catch {
       setMsg('Помилка мережі')
@@ -504,7 +553,7 @@ export default function TeamPlanBoard({
   ] as const
 
   return (
-    <div className="mx-auto max-w-[1600px] pb-24 sm:pb-0">
+    <div className={`mx-auto min-w-0 max-w-[1600px] ${isAdmin ? 'pb-24 sm:pb-0' : 'pb-28'}`}>
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground">{team.name}</h1>
@@ -580,38 +629,16 @@ export default function TeamPlanBoard({
             </button>
           </div>
         )}
-        {!isAdmin && (
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setEmployeeReportOpen(true)}
-              disabled={employeeReportBusy || localRows.length === 0}
-              className="tap-btn glass-send-btn inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-40"
-            >
-              <SendEnvelopeIcon className="h-4 w-4" />
-              Звіт керівництву
-            </button>
-          </div>
-        )}
       </div>
 
-      <div className="mb-4 rounded-xl border border-border/50 bg-white/50 p-2">
+      <div className="mb-4 min-w-0 rounded-xl border border-border/50 bg-white/50 p-2">
         <div className="mb-2 flex items-center justify-between gap-2 px-1">
-          <p className="text-sm font-semibold text-foreground">Плани на {monthLabel}</p>
-          <div className="relative">
+          <p className="min-w-0 truncate text-sm font-semibold text-foreground">Плани на {monthLabel}</p>
+          <div className="relative shrink-0" ref={datePickerRef}>
             <button
               type="button"
-              onClick={() => {
-                const el = dateInputRef.current
-                if (!el) return
-                try {
-                  if (typeof el.showPicker === 'function') el.showPicker()
-                  else el.click()
-                } catch {
-                  el.focus()
-                  el.click()
-                }
-              }}
+              onClick={() => setDatePickerOpen(v => !v)}
+              aria-expanded={datePickerOpen}
               className="tap-btn inline-flex items-center gap-2 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-foreground shadow-sm"
             >
               <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -619,20 +646,89 @@ export default function TeamPlanBoard({
               </svg>
               {shortDate}
             </button>
-            <input
-              ref={dateInputRef}
-              type="date"
-              value={date}
-              onChange={e => e.target.value && void goToDate(e.target.value)}
-              className="pointer-events-none absolute h-0 w-0 opacity-0"
-              tabIndex={-1}
-              aria-hidden
-            />
+            {datePickerOpen && (
+              <div
+                className="absolute right-0 top-[calc(100%+0.35rem)] z-40 w-[min(18.5rem,calc(100vw-1.5rem))] rounded-xl border border-border/60 bg-white p-3 shadow-xl"
+                style={{
+                  backdropFilter: 'blur(12px)',
+                  WebkitBackdropFilter: 'blur(12px)',
+                }}
+              >
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    className="tap-btn rounded-lg border border-border bg-white px-2.5 py-1.5 text-sm font-semibold"
+                    onClick={() => {
+                      const [y, m] = pickerMonth.split('-').map(Number)
+                      const dt = new Date(Date.UTC(y, m - 2, 1))
+                      setPickerMonth(dt.toISOString().slice(0, 10))
+                    }}
+                  >
+                    ‹
+                  </button>
+                  <p className="text-sm font-semibold text-foreground">{formatUkMonthYear(pickerMonth)}</p>
+                  <button
+                    type="button"
+                    className="tap-btn rounded-lg border border-border bg-white px-2.5 py-1.5 text-sm font-semibold"
+                    onClick={() => {
+                      const [y, m] = pickerMonth.split('-').map(Number)
+                      const dt = new Date(Date.UTC(y, m, 1))
+                      setPickerMonth(dt.toISOString().slice(0, 10))
+                    }}
+                  >
+                    ›
+                  </button>
+                </div>
+                <div className="grid grid-cols-7 gap-0.5 text-center text-[10px] font-medium text-muted-foreground">
+                  {['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'нд'].map(d => (
+                    <span key={d} className="py-1">{d}</span>
+                  ))}
+                </div>
+                <div className="grid grid-cols-7 gap-0.5">
+                  {(() => {
+                    const days = daysInMonth(pickerMonth)
+                    if (days.length === 0) return null
+                    const [y, m, d0] = days[0].split('-').map(Number)
+                    const monFirstPad = (new Date(Date.UTC(y, m - 1, d0)).getUTCDay() + 6) % 7
+                    const today = todayISO()
+                    const cells: ReactNode[] = []
+                    for (let i = 0; i < monFirstPad; i++) {
+                      cells.push(<span key={`pad-${i}`} />)
+                    }
+                    for (const day of days) {
+                      const dayNum = Number(day.slice(8, 10))
+                      const selected = day === date
+                      const isToday = day === today
+                      cells.push(
+                        <button
+                          key={day}
+                          type="button"
+                          onClick={() => {
+                            setDatePickerOpen(false)
+                            void goToDate(day)
+                          }}
+                          className={`tap-btn aspect-square rounded-lg text-sm font-semibold ${
+                            selected
+                              ? 'bg-primary text-primary-foreground shadow-sm'
+                              : isToday
+                                ? 'bg-primary/15 text-primary'
+                                : 'text-foreground hover:bg-muted'
+                          }`}
+                        >
+                          {dayNum}
+                        </button>
+                      )
+                    }
+                    return cells
+                  })()}
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <div
           ref={dayStripRef}
-          className="flex gap-1 overflow-x-auto pb-1 scroll-smooth [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="flex max-w-full gap-1 overflow-x-auto overscroll-x-contain pb-1 scroll-smooth [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
           {dateTabs.map(tab => {
             const label = formatUkDayTab(tab.date)
@@ -837,7 +933,7 @@ export default function TeamPlanBoard({
                   return (
                     <div
                       key={row.employee_id}
-                      className={`px-3 pt-3.5 pb-7 ${style.row} ${
+                      className={`px-4 pt-3.5 pb-7 ${style.row} ${
                         rowIdx < section.rows.length - 1 ? 'border-b-2 border-border/45' : ''
                       } ${notLoggedIn ? 'bg-amber-50/70' : ''}`}
                     >
@@ -851,7 +947,20 @@ export default function TeamPlanBoard({
                         />
                       </div>
                       <div className="flex flex-col gap-2.5">
-                        {visibleCols.map(c => (
+                        {visibleCols.map(c => {
+                          const val = cellValue(row, c)
+                          if (c.key === 'shift' && !isAdmin) {
+                            return (
+                              <div key={c.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-base">
+                                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  {COL_ICONS[c.key] ? <span className="mr-1 normal-case">{COL_ICONS[c.key]}</span> : null}
+                                  {c.label}
+                                </span>
+                                <span className="font-semibold text-foreground">{val.trim() || '—'}</span>
+                              </div>
+                            )
+                          }
+                          return (
                           <div key={c.id} className="flex flex-col gap-1">
                             <label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                               {COL_ICONS[c.key] ? <span className="normal-case">{COL_ICONS[c.key]}</span> : null}
@@ -890,7 +999,7 @@ export default function TeamPlanBoard({
                               col={c}
                               isAdmin={isAdmin}
                               canEdit={canEditField(c.is_system ? c.key : `extra:${c.key}`, row)}
-                              value={cellValue(row, c)}
+                              value={val}
                               onChange={v => onCellChange(row, c, v)}
                               onBlurAdmin={() => { scheduleBlurSave() }}
                               onBlurEmployee={v => {
@@ -901,7 +1010,8 @@ export default function TeamPlanBoard({
                               compact
                             />
                           </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     </div>
                   )
@@ -1017,14 +1127,6 @@ export default function TeamPlanBoard({
         busy={digestSending}
         onClose={() => setDigestOpen(false)}
         onSend={(ids, channels, content) => { void sendDigest(ids, channels, content) }}
-      />
-
-      <EmployeeLeadershipReportModal
-        open={employeeReportOpen}
-        busy={employeeReportBusy}
-        sharedPc={team.work_mode === 'shared'}
-        onClose={() => setEmployeeReportOpen(false)}
-        onSend={scope => { void sendEmployeeLeadershipReport(scope) }}
       />
 
       <ConfirmDialog
@@ -1144,20 +1246,31 @@ export default function TeamPlanBoard({
 
       {!isAdmin && (
         <div
-          className="fixed inset-x-0 bottom-0 z-30 px-3 sm:hidden"
+          className="fixed inset-x-0 bottom-0 z-30 px-3"
           style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
         >
           <div className="boty-glass mx-auto flex max-w-[1600px] justify-center rounded-lg px-1.5 py-2">
             <button
               type="button"
-              onClick={() => setEmployeeReportOpen(true)}
-              disabled={employeeReportBusy || localRows.length === 0}
-              className="tap-btn flex flex-col items-center gap-0.5 rounded-lg px-6 py-1 text-[10px] font-semibold text-primary disabled:opacity-40"
+              onClick={() => { void sendEmployeeLeadershipReport() }}
+              disabled={employeeReportBusy || !canSendMyReport}
+              title={canSendMyReport ? 'Надіслати свій звіт керівництву' : 'Спочатку заповніть «Виконано»'}
+              className={`tap-btn flex flex-col items-center gap-0.5 rounded-lg px-6 py-1 text-[10px] font-semibold disabled:opacity-40 ${
+                employeeReportSentAt ? 'text-green-700' : 'text-primary'
+              }`}
             >
-              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+              <span className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-sm ${
+                employeeReportSentAt ? 'bg-green-100 text-green-800' : 'bg-primary text-primary-foreground'
+              }`}>
                 <SendEnvelopeIcon className="h-5 w-5" />
+                {employeeReportSentAt && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-green-600 text-[8px] text-white">✓</span>
+                )}
               </span>
               Звіт керівництву
+              <span className={`text-[9px] font-normal ${employeeReportSentAt ? 'text-green-700/90' : 'invisible'}`}>
+                {employeeReportSentAt ? formatUkDateTime(employeeReportSentAt) : '00.00.0000 00:00'}
+              </span>
             </button>
           </div>
         </div>
@@ -1267,7 +1380,7 @@ function PlanField({
 
   if (plannedAsText) {
     return (
-      <div className={`min-h-[40px] w-full whitespace-pre-wrap rounded-[0.3rem] border border-sky-200/70 bg-sky-50/50 px-2.5 py-2 text-[15px] leading-snug text-foreground ${minW}`}>
+      <div className={`min-h-[40px] w-full whitespace-pre-wrap rounded-[0.3rem] border border-sky-200/70 bg-sky-50/50 px-2.5 py-2 text-base leading-snug text-foreground ${minW}`}>
         {value.trim() || '—'}
       </div>
     )
@@ -1283,12 +1396,19 @@ function PlanField({
           if (isAdmin) onBlurAdmin()
           else onBlurEmployee(v)
         }}
-        className={`w-full resize-none overflow-hidden rounded-[0.3rem] border px-2.5 py-2 text-[15px] leading-snug disabled:opacity-60 ${minW} ${fieldTone}`}
+        className={`w-full resize-none overflow-hidden rounded-[0.3rem] border px-2.5 py-2 text-base leading-snug disabled:opacity-60 ${minW} ${fieldTone}`}
       />
     )
   }
 
   if (isShift) {
+    if (!isAdmin || !canEdit) {
+      return (
+        <span className="inline-block whitespace-nowrap text-base font-semibold leading-snug text-foreground">
+          {value.trim() || '—'}
+        </span>
+      )
+    }
     const shiftChars = Math.max(value.length, 9)
     return (
       <input
@@ -1297,7 +1417,7 @@ function PlanField({
         size={shiftChars}
         onChange={e => onChange(e.target.value)}
         onBlur={() => { if (isAdmin) onBlurAdmin() }}
-        className="w-auto max-w-none whitespace-nowrap rounded-[0.3rem] border border-input bg-white/60 px-2.5 py-2 text-[15px] disabled:opacity-60 [field-sizing:content]"
+        className="w-auto max-w-none whitespace-nowrap rounded-[0.3rem] border border-input bg-white/60 px-2.5 py-2 text-base disabled:opacity-60 [field-sizing:content]"
       />
     )
   }
@@ -1308,7 +1428,7 @@ function PlanField({
       disabled={!canEdit}
       onChange={e => onChange(e.target.value)}
       onBlur={() => { if (isAdmin) onBlurAdmin() }}
-      className={`w-full rounded-[0.3rem] border border-input bg-white/60 px-2.5 py-2 text-[15px] disabled:opacity-60 ${minW}`}
+      className={`w-full rounded-[0.3rem] border border-input bg-white/60 px-2.5 py-2 text-base disabled:opacity-60 ${minW}`}
     />
   )
 }
@@ -1695,72 +1815,6 @@ function DigestModal({
           />
         </div>
       )}
-    </Modal>
-  )
-}
-
-function EmployeeLeadershipReportModal({
-  open,
-  busy,
-  sharedPc,
-  onClose,
-  onSend,
-}: {
-  open: boolean
-  busy: boolean
-  sharedPc: boolean
-  onClose: () => void
-  onSend: (scope: 'mine' | 'all') => void
-}) {
-  const [scope, setScope] = useState<'mine' | 'all'>('mine')
-
-  useEffect(() => {
-    if (open) setScope('mine')
-  }, [open])
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Звіт керівництву"
-      description="Надішле email і push керівництву з полем «Виконано»"
-    >
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={() => setScope('mine')}
-            className={`tap-btn rounded-xl border px-3 py-3 text-left text-sm ${
-              scope === 'mine'
-                ? 'border-primary bg-primary/10 font-semibold text-primary'
-                : 'border-border bg-white/70 text-foreground'
-            }`}
-          >
-            Тільки мій звіт (виконано)
-          </button>
-          {sharedPc && (
-            <button
-              type="button"
-              onClick={() => setScope('all')}
-              className={`tap-btn rounded-xl border px-3 py-3 text-left text-sm ${
-                scope === 'all'
-                  ? 'border-primary bg-primary/10 font-semibold text-primary'
-                  : 'border-border bg-white/70 text-foreground'
-              }`}
-            >
-              Усіх працівників (виконано) — спільний ПК
-            </button>
-          )}
-        </div>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onSend(scope)}
-          className="tap-btn rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-40"
-        >
-          {busy ? 'Надсилаємо…' : 'Надіслати email і push'}
-        </button>
-      </div>
     </Modal>
   )
 }

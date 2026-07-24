@@ -212,7 +212,7 @@ export default async function TeamPlanPage({ params }: Props) {
   const previousPlanDate = planDates.find(d => d < date) ?? null
 
   return (
-    <div className="plan-page">
+    <div className="plan-page min-w-0 max-w-full">
       {isAdmin && (
         <div className="mb-3">
           <Link href="/admin" className="tap-btn text-sm text-muted-foreground hover:text-foreground">

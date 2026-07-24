@@ -8,7 +8,7 @@ import {
   mapTaskRowsForEmail,
 } from '@/lib/email-plan-html'
 
-/** Employee → leadership: completed work report (email + push). */
+/** Employee → leadership: only the current user's completed report (email + push). */
 export async function POST(req: NextRequest) {
   try {
     const ctx = await getApiSession()
@@ -19,10 +19,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    const { teamId, date, scope = 'mine' } = await req.json() as {
+    const { teamId, date } = await req.json() as {
       teamId: string
       date: string
-      scope?: 'mine' | 'all'
     }
     if (!teamId || !date) {
       return NextResponse.json({ error: 'Невірні параметри' }, { status: 400 })
@@ -46,10 +45,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Немає доступу' }, { status: 403 })
     }
 
-    if (scope === 'all' && team.work_mode !== 'shared') {
-      return NextResponse.json({ error: 'Звіт усіх доступний лише на спільному ПК' }, { status: 400 })
-    }
-
     const { data: plan } = await supabase
       .from('day_plans')
       .select('id')
@@ -59,19 +54,16 @@ export async function POST(req: NextRequest) {
 
     if (!plan) return NextResponse.json({ error: 'План ще не створено' }, { status: 404 })
 
-    let query = supabase
+    const { data: rows } = await supabase
       .from('task_rows')
       .select('*, profile:profiles(full_name, email), department:departments(name)')
       .eq('plan_id', plan.id)
+      .eq('employee_id', user.id)
+      .order('created_at')
 
-    if (scope === 'mine') {
-      query = query.eq('employee_id', user.id)
-    }
-
-    const { data: rows } = await query.order('created_at')
     const withCompleted = (rows ?? []).filter(r => (r.completed || '').trim())
     if (withCompleted.length === 0) {
-      return NextResponse.json({ error: 'Немає заповненого «Виконано» для відправки' }, { status: 400 })
+      return NextResponse.json({ error: 'Заповніть своє поле «Виконано» перед відправкою' }, { status: 400 })
     }
 
     const [{ data: teamAdmins }, { data: superAdmins }] = await Promise.all([
@@ -91,6 +83,7 @@ export async function POST(req: NextRequest) {
     const leaderIds = await getTeamLeaderUserIds(supabase, teamId)
 
     const dateStr = formatUkDate(date)
+    const fromName = profile.full_name || user.email
 
     let emailSent = 0
     let pushSent = 0
@@ -111,11 +104,10 @@ export async function POST(req: NextRequest) {
       }))
       const tableHtml = buildDeptGroupedPlanTableHtml(emailRows, 'completed', extraCols)
 
-      const scopeLabel = scope === 'all' ? 'усіх працівників' : profile.full_name || user.email
       const html = `
         <div style="font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 24px;">
           <h2 style="color:#2d6a4f;">Звіт керівництву — ${team.name} — ${dateStr}</h2>
-          <p style="color:#555;">Від: <strong>${profile.full_name || user.email}</strong> (${scopeLabel})</p>
+          <p style="color:#555;">Від: <strong>${fromName}</strong></p>
           ${tableHtml}
           <p style="margin-top:16px;font-size:12px;color:#999;">PlanDay-GA</p>
         </div>
@@ -133,7 +125,7 @@ export async function POST(req: NextRequest) {
     if (leaderIds.length > 0 && isPushConfigured()) {
       pushSent = await sendPushToUserIds(supabase, leaderIds, {
         title: 'Звіт керівництву',
-        body: `${profile.full_name || user.email} · ${team.name} · ${withCompleted.length} звітів`,
+        body: `${fromName} · ${team.name} · ${dateStr}`,
       })
     }
 
@@ -141,7 +133,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Не вдалося надіслати (немає email/push у керівництва)' }, { status: 400 })
     }
 
-    return NextResponse.json({ success: true, emailSent, pushSent })
+    return NextResponse.json({
+      success: true,
+      emailSent,
+      pushSent,
+      sent_at: new Date().toISOString(),
+    })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     return NextResponse.json({ error: message }, { status: 500 })

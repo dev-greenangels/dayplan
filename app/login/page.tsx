@@ -3,50 +3,62 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import BrandLogo from '@/components/brand-logo'
 
+/** Always use the current browser origin for OAuth — never bake localhost from env. */
 function authRedirectTo(path: string) {
-  const origin =
-    process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, '') ||
-    (typeof window !== 'undefined' ? window.location.origin : '')
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
   return `${origin}${path}`
 }
 
 export default function LoginPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')
-  const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
   const [sent, setSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  async function handleSendCode(e: React.FormEvent) {
+  async function handleSendCode(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    if (!email.trim()) return
+    const form = e.currentTarget
+    const input = form.elements.namedItem('email') as HTMLInputElement | null
+    const address = (input?.value ?? '').trim()
+    const ok = Boolean(input?.checkValidity() && address)
+    if (!ok) {
+      form.reportValidity()
+      setError('Введіть коректний email')
+      return
+    }
     setLoading(true)
     setError(null)
+    setEmail(address)
     const supabase = createClient()
     const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: {
-        shouldCreateUser: true,
-      },
+      email: address,
+      options: { shouldCreateUser: true },
     })
     if (error) setError(error.message)
     else setSent(true)
     setLoading(false)
   }
 
-  async function handleVerifyCode(e: React.FormEvent) {
+  async function handleVerifyCode(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    if (!code.trim()) return
+    const form = e.currentTarget
+    const input = form.elements.namedItem('code') as HTMLInputElement | null
+    const token = (input?.value ?? '').replace(/\s/g, '').trim()
+    const ok = Boolean(input?.checkValidity() && token.length >= 6)
+    if (!ok) {
+      form.reportValidity()
+      setError('Введіть код з листа')
+      return
+    }
     setLoading(true)
     setError(null)
     const supabase = createClient()
     const { error } = await supabase.auth.verifyOtp({
       email: email.trim(),
-      token: code.trim(),
+      token,
       type: 'email',
     })
     if (error) {
@@ -64,9 +76,7 @@ export default function LoginPage() {
     const supabase = createClient()
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: {
-        redirectTo: authRedirectTo('/auth/callback'),
-      },
+      options: { redirectTo: authRedirectTo('/auth/callback') },
     })
     if (error) {
       setError(error.message)
@@ -95,11 +105,25 @@ export default function LoginPage() {
             from { opacity: 0; transform: translateY(24px); }
             to   { opacity: 1; transform: translateY(0); }
           }
+          /* Native constraint UI — updates on iOS without React change events */
+          .login-otp-form:has(input:invalid) .login-otp-submit:not(:disabled),
+          .login-otp-form:invalid .login-otp-submit:not(:disabled) {
+            opacity: 0.5;
+            pointer-events: none;
+            cursor: not-allowed;
+          }
         `}</style>
 
         <div className="mb-7 text-center">
           <div className="mx-auto mb-4 flex justify-center">
-            <BrandLogo size={64} rounded="rounded-2xl" className="shadow-lg shadow-primary/30" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/green-angels-logo.png"
+              alt="Green Angels"
+              width={280}
+              height={108}
+              className="h-auto w-full max-w-[280px] object-contain drop-shadow-md"
+            />
           </div>
           <h1 className="text-2xl font-bold text-foreground">PlanDay-GA</h1>
           <p className="mt-1 text-sm text-muted-foreground">Планування робочого дня</p>
@@ -115,7 +139,11 @@ export default function LoginPage() {
           }}
         >
           {sent ? (
-            <form onSubmit={handleVerifyCode} className="flex flex-col gap-3" style={{ animation: 'fadeInUp 0.3s ease both' }}>
+            <form
+              onSubmit={handleVerifyCode}
+              className="login-otp-form flex flex-col gap-3"
+              style={{ animation: 'fadeInUp 0.3s ease both' }}
+            >
               <div className="mx-auto mb-2 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10">
                 <svg className="h-7 w-7 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -127,13 +155,20 @@ export default function LoginPage() {
                 <span className="font-medium text-foreground">{email}</span>
               </p>
               <input
+                name="code"
                 type="text"
                 inputMode="numeric"
+                pattern="[0-9]{6}"
                 autoComplete="one-time-code"
-                value={code}
-                onChange={e => setCode(e.target.value.replace(/\s/g, ''))}
                 placeholder="123456"
                 required
+                minLength={6}
+                maxLength={6}
+                onInput={e => {
+                  // keep native :invalid in sync; clear error while typing
+                  void e.currentTarget.checkValidity()
+                  if (error) setError(null)
+                }}
                 className="rounded-xl border border-input bg-white/60 px-3.5 py-2.5 text-center text-lg tracking-[0.3em] text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />
               {error && (
@@ -141,14 +176,14 @@ export default function LoginPage() {
               )}
               <button
                 type="submit"
-                disabled={loading || code.trim().length < 6}
-                className="tap-btn rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow shadow-primary/25 disabled:opacity-50"
+                disabled={loading}
+                className="login-otp-submit tap-btn rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow shadow-primary/25 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loading ? 'Перевіряємо...' : 'Увійти'}
               </button>
               <button
                 type="button"
-                onClick={() => { setSent(false); setCode(''); setError(null) }}
+                onClick={() => { setSent(false); setError(null) }}
                 className="tap-btn mt-1 text-sm text-primary underline underline-offset-4"
               >
                 Змінити email / надіслати ще раз
@@ -159,6 +194,7 @@ export default function LoginPage() {
               <h2 className="mb-5 text-lg font-semibold text-foreground">Увійти</h2>
 
               <button
+                type="button"
                 onClick={handleGoogle}
                 disabled={googleLoading}
                 className="tap-btn flex w-full items-center justify-center gap-3 rounded-xl border border-border/70 bg-white/80 px-4 py-2.5 text-sm font-medium text-foreground shadow-sm disabled:opacity-60"
@@ -185,19 +221,27 @@ export default function LoginPage() {
                 <div className="h-px flex-1 bg-border/60" />
               </div>
 
-              <form onSubmit={handleSendCode} className="flex flex-col gap-3">
+              <form onSubmit={handleSendCode} className="login-otp-form flex flex-col gap-3">
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="email" className="text-sm font-medium text-foreground">
+                  <label htmlFor="login-email" className="text-sm font-medium text-foreground">
                     Email
                   </label>
                   <input
-                    id="email"
+                    id="login-email"
+                    name="email"
                     type="email"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
+                    inputMode="email"
+                    autoComplete="email"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                     placeholder="your@email.com"
                     required
-                    className="rounded-xl border border-input bg-white/60 px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition"
+                    onInput={e => {
+                      void e.currentTarget.checkValidity()
+                      if (error) setError(null)
+                    }}
+                    className="rounded-xl border border-input bg-white/60 px-3.5 py-2.5 text-base text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition"
                   />
                 </div>
                 {error && (
@@ -205,8 +249,8 @@ export default function LoginPage() {
                 )}
                 <button
                   type="submit"
-                  disabled={loading || !email.trim()}
-                  className="tap-btn rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow shadow-primary/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={loading}
+                  className="login-otp-submit tap-btn rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow shadow-primary/25 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loading ? 'Надсилаємо...' : 'Отримати код'}
                 </button>

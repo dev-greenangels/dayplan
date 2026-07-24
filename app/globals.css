@@ -64,10 +64,27 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    max-width: 100%;
+  }
   body {
     @apply bg-background text-foreground;
     background-image: linear-gradient(135deg, oklch(0.94 0.025 150) 0%, oklch(0.97 0.015 155) 50%, oklch(0.95 0.02 145) 100%);
     min-height: 100vh;
+    max-width: 100%;
+  }
+  /* iOS Safari zooms focused inputs when font-size < 16px */
+  @media (max-width: 640px) {
+    html,
+    body {
+      overflow-x: clip;
+      touch-action: pan-x pan-y;
+    }
+    input,
+    textarea,
+    select {
+      font-size: 16px !important;
+    }
   }
 }
 
@@ -154,13 +171,15 @@
   }
   @media (max-width: 640px) {
     .app-main {
+      padding-left: 1rem;
+      padding-right: 1rem;
       padding-bottom: calc(1rem + env(safe-area-inset-bottom));
     }
     .glass-card {
       border-radius: 1rem;
     }
     .plan-page {
-      margin-inline: -0.25rem;
+      padding-inline: 0.25rem;
     }
   }
   @keyframes scale-in {

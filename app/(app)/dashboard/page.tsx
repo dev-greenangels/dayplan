@@ -59,7 +59,6 @@ export default async function DashboardPage() {
       pastRows={pastRows}
       teamName={team?.name}
       teamId={team?.id ?? membership?.team_id}
-      workMode={team?.work_mode ?? 'individual'}
     />
   )
 }

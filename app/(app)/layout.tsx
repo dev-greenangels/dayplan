@@ -20,7 +20,7 @@ export default async function AppLayout({
     <div className="page-bg min-h-screen">
       <NavBar profile={ctx.profile} />
       <PushProvider />
-      <main className="app-main mx-auto max-w-[1600px] px-3 py-4 sm:px-4 sm:py-6">
+      <main className="app-main mx-auto min-w-0 max-w-[1600px] px-3 py-4 sm:px-4 sm:py-6">
         {children}
       </main>
     </div>

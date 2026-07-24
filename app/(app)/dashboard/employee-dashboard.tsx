@@ -1,10 +1,9 @@
 'use client'
 
 import { useState, useTransition, useEffect } from 'react'
-import type { DayPlan, Profile, TaskRow, WorkMode } from '@/lib/types'
-import { formatUkDate } from '@/lib/format-date'
+import type { DayPlan, Profile, TaskRow } from '@/lib/types'
+import { formatUkDate, formatUkDateTime } from '@/lib/format-date'
 import { updateTaskRowFields } from '@/app/actions/plans'
-import Modal from '@/components/modal'
 import BrandLogo from '@/components/brand-logo'
 
 type TaskRowWithPlan = TaskRow & { day_plans: DayPlan | null }
@@ -16,7 +15,6 @@ interface Props {
   pastRows: TaskRowWithPlan[]
   teamName?: string
   teamId?: string
-  workMode?: WorkMode
 }
 
 function formatDate(dateStr: string) {
@@ -26,11 +24,10 @@ function formatDate(dateStr: string) {
 export default function EmployeeDashboard({
   profile,
   todayRow,
-  todayPlan,
+  todayPlan: _todayPlan,
   pastRows,
   teamName,
   teamId,
-  workMode = 'individual',
 }: Props) {
   const today = new Date().toISOString().slice(0, 10)
   const [report, setReport] = useState(todayRow?.completed ?? '')
@@ -38,10 +35,19 @@ export default function EmployeeDashboard({
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
-  const [reportOpen, setReportOpen] = useState(false)
   const [reportBusy, setReportBusy] = useState(false)
-  const [reportScope, setReportScope] = useState<'mine' | 'all'>('mine')
   const [reportMsg, setReportMsg] = useState<string | null>(null)
+  const storageKey = teamId ? `emp-report:${teamId}:${today}:${profile.id}` : null
+  const [reportSentAt, setReportSentAt] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!storageKey) return
+    try {
+      setReportSentAt(localStorage.getItem(storageKey))
+    } catch {
+      setReportSentAt(null)
+    }
+  }, [storageKey])
 
   useEffect(() => {
     if (saved) {
@@ -63,28 +69,38 @@ export default function EmployeeDashboard({
     })
   }
 
-  async function sendLeadershipReport(scope: 'mine' | 'all') {
+  async function sendLeadershipReport() {
     if (!teamId) return
+    if (!report.trim()) {
+      setReportMsg('Помилка: заповніть «Виконано» перед відправкою')
+      return
+    }
     setReportBusy(true)
     setReportMsg(null)
     try {
-      if (todayRow && report.trim()) {
+      if (todayRow) {
         await updateTaskRowFields(todayRow.id, { completed: report, notes })
       }
       const res = await fetch('/api/send-employee-leadership-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teamId, date: today, scope }),
+        body: JSON.stringify({ teamId, date: today }),
       })
       const json = await res.json()
       if (!res.ok || json.error) {
         setReportMsg('Помилка: ' + (json.error || `HTTP ${res.status}`))
       } else {
+        const sentAt = (json.sent_at as string) || new Date().toISOString()
+        setReportSentAt(sentAt)
+        if (storageKey) {
+          try {
+            localStorage.setItem(storageKey, sentAt)
+          } catch { /* ignore */ }
+        }
         const parts: string[] = []
         if (json.emailSent) parts.push(`email: ${json.emailSent}`)
         if (json.pushSent) parts.push(`push: ${json.pushSent}`)
         setReportMsg(parts.length ? `Надіслано (${parts.join(', ')})` : 'Надіслано')
-        setReportOpen(false)
         setSaved(true)
       }
     } catch {
@@ -94,25 +110,13 @@ export default function EmployeeDashboard({
   }
 
   return (
-    <div className="mx-auto max-w-lg">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">
-            Привіт, {profile.full_name || 'Працівнику'}
-          </h1>
-          <p className="mt-0.5 text-sm text-muted-foreground">{formatDate(today)}</p>
-          {teamName && <p className="text-xs text-muted-foreground">{teamName}</p>}
-        </div>
-        {teamId && (
-          <button
-            type="button"
-            onClick={() => setReportOpen(true)}
-            disabled={!todayRow}
-            className="tap-btn glass-send-btn inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-40"
-          >
-            Звіт керівництву
-          </button>
-        )}
+    <div className="mx-auto max-w-lg pb-24">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-foreground">
+          Привіт, {profile.full_name || 'Працівнику'}
+        </h1>
+        <p className="mt-0.5 text-sm text-muted-foreground">{formatDate(today)}</p>
+        {teamName && <p className="text-xs text-muted-foreground">{teamName}</p>}
       </div>
 
       {(error || reportMsg) && (
@@ -142,7 +146,7 @@ export default function EmployeeDashboard({
                 Зміна: <span className="font-semibold text-foreground">{todayRow.shift}</span>
               </p>
             )}
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+            <p className="whitespace-pre-wrap text-base leading-relaxed text-foreground">
               {todayRow.planned || <span className="italic text-muted-foreground">План ще не заповнено</span>}
             </p>
           </div>
@@ -161,7 +165,7 @@ export default function EmployeeDashboard({
             onChange={e => setReport(e.target.value)}
             placeholder="Що виконано сьогодні..."
             rows={4}
-            className="w-full resize-none rounded-xl border border-input bg-white/60 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-full resize-none rounded-xl border border-input bg-white/60 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-ring"
           />
           <p className="mb-2 mt-4 text-sm font-medium text-foreground">Обробки</p>
           <textarea
@@ -169,13 +173,13 @@ export default function EmployeeDashboard({
             onChange={e => setNotes(e.target.value)}
             placeholder="Додаткові обробки (якщо були)..."
             rows={2}
-            className="w-full resize-none rounded-xl border border-input bg-white/60 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-full resize-none rounded-xl border border-input bg-white/60 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-ring"
           />
 
           <button
             onClick={handleSubmit}
             disabled={isPending || !report.trim()}
-            className="relative mt-4 w-full overflow-hidden rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground shadow transition hover:opacity-90 disabled:opacity-50"
+            className="relative mt-4 w-full overflow-hidden rounded-xl bg-primary py-3 text-base font-semibold text-primary-foreground shadow transition hover:opacity-90 disabled:opacity-50"
           >
             {isPending ? 'Відправка...' : saved ? '✓ Звіт збережено!' : 'Зберегти звіт'}
           </button>
@@ -207,47 +211,41 @@ export default function EmployeeDashboard({
         </div>
       )}
 
-      <Modal
-        open={reportOpen}
-        onClose={() => setReportOpen(false)}
-        title="Звіт керівництву"
-        description="Надішле email і push керівництву з полем «Виконано»"
-      >
-        <div className="flex flex-col gap-3">
-          <button
-            type="button"
-            onClick={() => setReportScope('mine')}
-            className={`tap-btn rounded-xl border px-3 py-3 text-left text-sm ${
-              reportScope === 'mine'
-                ? 'border-primary bg-primary/10 font-semibold text-primary'
-                : 'border-border bg-white/70 text-foreground'
-            }`}
-          >
-            Тільки мій звіт (виконано)
-          </button>
-          {workMode === 'shared' && (
+      {teamId && todayRow && (
+        <div
+          className="fixed inset-x-0 bottom-0 z-30 px-3"
+          style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
+        >
+          <div className="boty-glass mx-auto flex max-w-lg justify-center rounded-lg px-1.5 py-2">
             <button
               type="button"
-              onClick={() => setReportScope('all')}
-              className={`tap-btn rounded-xl border px-3 py-3 text-left text-sm ${
-                reportScope === 'all'
-                  ? 'border-primary bg-primary/10 font-semibold text-primary'
-                  : 'border-border bg-white/70 text-foreground'
+              onClick={() => { void sendLeadershipReport() }}
+              disabled={reportBusy || !report.trim()}
+              className={`tap-btn flex flex-col items-center gap-0.5 rounded-lg px-6 py-1 text-[10px] font-semibold disabled:opacity-40 ${
+                reportSentAt ? 'text-green-700' : 'text-primary'
               }`}
             >
-              Усіх працівників (виконано) — спільний ПК
+              <span className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-sm ${
+                reportSentAt ? 'bg-green-100 text-green-800' : 'bg-primary text-primary-foreground'
+              }`}>
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 8.5l6.8 4.25a2 2 0 002.1 0L19.7 8.5" />
+                  <rect x="3" y="6" width="14.5" height="12" rx="1.5" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 4.5h4.5v4.5" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 4.5l-6 6" />
+                </svg>
+                {reportSentAt && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-green-600 text-[8px] text-white">✓</span>
+                )}
+              </span>
+              Звіт керівництву
+              <span className={`text-[9px] font-normal ${reportSentAt ? 'text-green-700/90' : 'invisible'}`}>
+                {reportSentAt ? formatUkDateTime(reportSentAt) : '00.00.0000 00:00'}
+              </span>
             </button>
-          )}
-          <button
-            type="button"
-            disabled={reportBusy}
-            onClick={() => { void sendLeadershipReport(reportScope) }}
-            className="tap-btn rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-40"
-          >
-            {reportBusy ? 'Надсилаємо…' : 'Надіслати email і push'}
-          </button>
+          </div>
         </div>
-      </Modal>
+      )}
     </div>
   )
 }
