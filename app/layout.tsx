@@ -55,6 +55,8 @@ export const metadata: Metadata = {
   },
   other: {
     'mobile-web-app-capable': 'yes',
+    // Next only emits the standard tag; older iOS still gates startup images on this one.
+    'apple-mobile-web-app-capable': 'yes',
   },
 }
 

@@ -12,7 +12,8 @@ function splashHref(path: string) {
 
 /**
  * Explicit <link rel="apple-touch-startup-image"> tags.
- * Next metadata omits `sizes` / `screen and` details that iOS often requires.
+ * Format mirrors pwa-asset-generator exactly: bare media query, no `sizes`.
+ * iOS silently drops the link when either deviates.
  */
 export default function AppleStartupLinks() {
   return (
@@ -23,7 +24,6 @@ export default function AppleStartupLinks() {
           rel="apple-touch-startup-image"
           href={splashHref(img.url)}
           media={img.media}
-          sizes={img.sizes}
         />
       ))}
     </>

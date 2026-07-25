@@ -80,7 +80,7 @@ async function composeSplash(width, height) {
 }
 
 function mediaQuery(cssW, cssH, dpr, orientation) {
-  return `screen and (device-width: ${cssW}px) and (device-height: ${cssH}px) and (-webkit-device-pixel-ratio: ${dpr}) and (orientation: ${orientation})`
+  return `(device-width: ${cssW}px) and (device-height: ${cssH}px) and (-webkit-device-pixel-ratio: ${dpr}) and (orientation: ${orientation})`
 }
 
 fs.mkdirSync(outDir, { recursive: true })
@@ -107,6 +107,14 @@ for (const [w, h, cssW, cssH, dpr] of SIZES) {
   })
   console.log('wrote', landscapeName)
 }
+
+// Orientation-only catch-all for devices whose exact metrics we don't list yet
+// (new iPhones ship faster than this table). The artwork is a centred gradient,
+// so a small aspect-ratio mismatch is not visible.
+entries.push(
+  { url: '/splash/apple-splash-1320-2868.png', media: '(orientation: portrait)', sizes: '1320x2868' },
+  { url: '/splash/apple-splash-2868-1320.png', media: '(orientation: landscape)', sizes: '2868x1320' },
+)
 
 fs.writeFileSync(path.join(outDir, 'startup-images.json'), JSON.stringify(entries, null, 2))
 console.log('done,', entries.length, 'entries')
