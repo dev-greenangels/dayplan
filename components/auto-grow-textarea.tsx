@@ -6,6 +6,8 @@ import {
   ensureEmptyFocusPrefix,
 } from '@/lib/soft-numbering'
 
+const FOCUS_MAX_RATIO = 0.5
+
 function vvHeight(): number {
   return window.visualViewport?.height ?? window.innerHeight
 }
@@ -14,65 +16,106 @@ function scroller() {
   return document.scrollingElement || document.documentElement
 }
 
-/** Blurred: show full text on the page. */
+/**
+ * iOS-safe content height after a constrained box.
+ * Probe at max height with overflow hidden — scrollHeight then reflects full text
+ * without collapsing to 0 (which jumps the page while focused).
+ */
+function measureContentHeight(
+  el: HTMLTextAreaElement,
+  minHeight: number,
+  probeMax: number
+): number {
+  const prevH = el.style.height
+  const prevMax = el.style.maxHeight
+  const prevOv = el.style.overflowY
+  el.style.overflowY = 'hidden'
+  el.style.maxHeight = 'none'
+  el.style.height = `${probeMax}px`
+  const h = Math.max(minHeight, el.scrollHeight)
+  el.style.height = prevH
+  el.style.maxHeight = prevMax
+  el.style.overflowY = prevOv
+  return h
+}
+
+/** Blurred: full text visible — no max-height clip. */
 function expandFull(el: HTMLTextAreaElement, minHeight: number) {
   const s = scroller()
   const y0 = s.scrollTop
   const top0 = el.getBoundingClientRect().top
+
+  el.style.overflowY = 'hidden'
+  el.style.maxHeight = 'none'
+  // Force iOS to recompute full scrollHeight after focused constraint
+  el.style.height = '0px'
+  const next = Math.max(minHeight, el.scrollHeight)
+  el.style.height = `${next}px`
   el.style.maxHeight = ''
   el.style.overflowY = 'hidden'
-  el.style.height = 'auto'
-  el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`
+
   const dy = el.getBoundingClientRect().top - top0
   if (dy) s.scrollTop = y0 + dy
 }
 
 /**
- * Focused on iOS/Android: keep a STABLE height (no grow/collapse per key).
- * Changing height while focused makes Safari jump the page to the top —
- * especially for the last field above the keyboard.
+ * Focused: grow with content up to 50% of visible viewport, then internal scroll.
+ * Short text → short box; long text → capped box + inner scroll.
  */
-function applyFocusedBox(el: HTMLTextAreaElement, minHeight: number) {
-  const boxH = Math.max(minHeight, Math.floor(vvHeight() * 0.38))
-  el.style.height = `${boxH}px`
-  el.style.maxHeight = `${boxH}px`
-  el.style.overflowY = 'auto'
+function applyFocusedSize(el: HTMLTextAreaElement, minHeight: number) {
+  const maxH = Math.max(minHeight, Math.floor(vvHeight() * FOCUS_MAX_RATIO))
+  const s = scroller()
+  const y0 = s.scrollTop
+  const top0 = el.getBoundingClientRect().top
+
+  const natural = measureContentHeight(el, minHeight, maxH)
+  const next = Math.min(natural, maxH)
+  el.style.maxHeight = `${maxH}px`
+  el.style.height = `${next}px`
+  el.style.overflowY = natural > maxH + 1 ? 'auto' : 'hidden'
+
+  const dy = el.getBoundingClientRect().top - top0
+  if (dy) s.scrollTop = y0 + dy
+  return { natural, maxH, next }
 }
 
-function stickCaretVisible(el: HTMLTextAreaElement) {
-  const atEnd = (el.selectionEnd ?? 0) >= el.value.length - 1
-  if (atEnd) {
-    el.scrollTop = el.scrollHeight
-    return
-  }
-  try {
-    const pos = el.selectionEnd ?? el.value.length
-    const cs = window.getComputedStyle(el)
-    const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.45 || 22
-    const padTop = parseFloat(cs.paddingTop) || 0
-    const lines = el.value.slice(0, pos).split('\n').length
-    const caretY = padTop + (lines - 1) * line
-    const viewBottom = el.scrollTop + el.clientHeight - line
-    if (caretY > viewBottom) el.scrollTop = caretY - el.clientHeight + line * 1.5
-    else if (caretY < el.scrollTop) el.scrollTop = Math.max(0, caretY - line)
-  } catch {
-    /* ignore */
-  }
+function lineMetrics(el: HTMLTextAreaElement) {
+  const cs = window.getComputedStyle(el)
+  const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.45 || 22
+  const padTop = parseFloat(cs.paddingTop) || 0
+  return { line, padTop }
 }
 
-/** Place field in the visible area once (after keyboard opens). */
+function caretOffsetY(el: HTMLTextAreaElement, pos: number) {
+  const { line, padTop } = lineMetrics(el)
+  const lines = el.value.slice(0, pos).split('\n').length
+  return padTop + (lines - 1) * line
+}
+
+/** Scroll inside the box so `pos` is visible. */
+function scrollPosIntoView(el: HTMLTextAreaElement, pos: number) {
+  if (el.scrollHeight <= el.clientHeight + 1) return
+  const { line } = lineMetrics(el)
+  const caretY = caretOffsetY(el, pos)
+  const viewTop = el.scrollTop
+  const viewBottom = viewTop + el.clientHeight - line * 1.25
+  if (caretY > viewBottom) el.scrollTop = caretY - el.clientHeight + line * 2
+  else if (caretY < viewTop + line * 0.5) el.scrollTop = Math.max(0, caretY - line)
+}
+
+function scrollToEnd(el: HTMLTextAreaElement) {
+  el.scrollTop = el.scrollHeight
+}
+
+/** Place field once in the visible area above the keyboard. */
 function placeOnce(el: HTMLTextAreaElement) {
   const vv = window.visualViewport
   const viewTop = vv?.offsetTop ?? 0
   const viewH = vv?.height ?? window.innerHeight
   const rect = el.getBoundingClientRect()
-  // Keep field in the upper half of the visible viewport, above keyboard
-  const desiredTop = viewTop + Math.min(72, viewH * 0.12)
+  const desiredTop = viewTop + Math.min(64, viewH * 0.1)
   const delta = rect.top - desiredTop
-  if (Math.abs(delta) > 16) {
-    const s = scroller()
-    s.scrollTop += delta
-  }
+  if (Math.abs(delta) > 16) scroller().scrollTop += delta
 }
 
 export default function AutoGrowTextarea({
@@ -104,8 +147,11 @@ export default function AutoGrowTextarea({
   const focusedRef = useRef(false)
   const rafRef = useRef(0)
   const focusTimerRef = useRef(0)
+  const blurTimerRef = useRef(0)
   const placedRef = useRef(false)
   const lastVvHRef = useRef(0)
+  /** After focus: prefer end vs caret location */
+  const preferEndRef = useRef(false)
 
   const syncIdleHeight = useCallback(() => {
     const el = ref.current
@@ -113,23 +159,34 @@ export default function AutoGrowTextarea({
     expandFull(el, minHeight)
   }, [minHeight])
 
-  useEffect(() => {
-    // Only resize when NOT focused — avoids iOS scroll jump on each key
-    if (!focusedRef.current) syncIdleHeight()
-    else {
-      const el = ref.current
-      if (el) stickCaretVisible(el)
+  const syncFocused = useCallback(() => {
+    const el = ref.current
+    if (!el || !focusedRef.current) return
+    applyFocusedSize(el, minHeight)
+    const pos = el.selectionEnd ?? el.value.length
+    if (preferEndRef.current || pos >= el.value.length - 1) {
+      scrollToEnd(el)
+    } else {
+      scrollPosIntoView(el, pos)
     }
-  }, [value, syncIdleHeight])
+  }, [minHeight])
+
+  useEffect(() => {
+    if (focusedRef.current) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = requestAnimationFrame(syncFocused)
+    } else {
+      syncIdleHeight()
+    }
+  }, [value, syncFocused, syncIdleHeight])
 
   useEffect(() => {
     const onVvResize = () => {
       if (!focusedRef.current || !ref.current) return
       const h = vvHeight()
-      if (Math.abs(h - lastVvHRef.current) < 50) return
+      if (Math.abs(h - lastVvHRef.current) < 40) return
       lastVvHRef.current = h
-      applyFocusedBox(ref.current, minHeight)
-      stickCaretVisible(ref.current)
+      syncFocused()
       if (!placedRef.current) {
         placeOnce(ref.current)
         placedRef.current = true
@@ -140,16 +197,18 @@ export default function AutoGrowTextarea({
       window.visualViewport?.removeEventListener('resize', onVvResize)
       cancelAnimationFrame(rafRef.current)
       window.clearTimeout(focusTimerRef.current)
+      window.clearTimeout(blurTimerRef.current)
       document.documentElement.classList.remove('dp-field-focused')
     }
-  }, [minHeight])
+  }, [syncFocused])
 
   function setCaret(pos: number) {
     const el = ref.current
     if (!el) return
     requestAnimationFrame(() => {
       el.setSelectionRange(pos, pos)
-      stickCaretVisible(el)
+      preferEndRef.current = pos >= el.value.length - 1
+      syncFocused()
     })
   }
 
@@ -165,13 +224,23 @@ export default function AutoGrowTextarea({
       enterKeyHint={softNumbering ? 'enter' : 'done'}
       autoCapitalize="sentences"
       autoCorrect="on"
+      onPointerDown={() => {
+        // Tap inside existing text → show that place (not force end)
+        preferEndRef.current = false
+      }}
       onChange={e => {
         onChange(e.target.value)
-        // Keep caret visible inside the fixed box — do not touch page scroll
+        preferEndRef.current =
+          (e.target.selectionEnd ?? 0) >= e.target.value.length - 1
         cancelAnimationFrame(rafRef.current)
-        rafRef.current = requestAnimationFrame(() => {
-          if (ref.current && focusedRef.current) stickCaretVisible(ref.current)
-        })
+        rafRef.current = requestAnimationFrame(syncFocused)
+      }}
+      onSelect={e => {
+        if (!focusedRef.current) return
+        const el = e.currentTarget
+        preferEndRef.current =
+          (el.selectionEnd ?? 0) >= el.value.length - 1
+        scrollPosIntoView(el, el.selectionEnd ?? el.value.length)
       }}
       onKeyDown={e => {
         if (!softNumbering || disabled) return
@@ -184,14 +253,22 @@ export default function AutoGrowTextarea({
           el.selectionEnd
         )
         onChange(text)
+        preferEndRef.current = true
         setCaret(caret)
       }}
       onBlur={e => {
         focusedRef.current = false
         placedRef.current = false
+        preferEndRef.current = false
         window.clearTimeout(focusTimerRef.current)
         document.documentElement.classList.remove('dp-field-focused')
-        expandFull(e.currentTarget, minHeight)
+        const el = e.currentTarget
+        // Double rAF + short delay: iOS needs a tick after keyboard dismissal
+        expandFull(el, minHeight)
+        window.clearTimeout(blurTimerRef.current)
+        blurTimerRef.current = window.setTimeout(() => {
+          if (!focusedRef.current) expandFull(el, minHeight)
+        }, 50)
         onBlur?.(e.target.value)
       }}
       onFocus={e => {
@@ -200,25 +277,44 @@ export default function AutoGrowTextarea({
         lastVvHRef.current = vvHeight()
         document.documentElement.classList.add('dp-field-focused')
 
+        const el = e.currentTarget
+        const wasEmpty = el.value.trim() === ''
+
         if (softNumbering && !disabled) {
-          const starter = ensureEmptyFocusPrefix(e.currentTarget.value)
+          const starter = ensureEmptyFocusPrefix(el.value)
           if (starter) {
+            preferEndRef.current = true
             onChange(starter)
             setCaret(starter.length)
+            onFocus?.()
+            window.clearTimeout(focusTimerRef.current)
+            focusTimerRef.current = window.setTimeout(() => {
+              if (!focusedRef.current || !ref.current) return
+              lastVvHRef.current = vvHeight()
+              syncFocused()
+              placeOnce(ref.current)
+              placedRef.current = true
+            }, 350)
+            return
           }
         }
-        onFocus?.()
 
-        // Lock height immediately so Safari won't reflow-jump while typing
-        applyFocusedBox(e.currentTarget, minHeight)
-        stickCaretVisible(e.currentTarget)
+        // Empty / near-end → show end; otherwise keep tap caret location
+        const pos = el.selectionStart ?? 0
+        preferEndRef.current =
+          wasEmpty || pos >= el.value.length - 1 || el.value.length < 8
+
+        onFocus?.()
+        syncFocused()
 
         window.clearTimeout(focusTimerRef.current)
         focusTimerRef.current = window.setTimeout(() => {
           if (!focusedRef.current || !ref.current) return
           lastVvHRef.current = vvHeight()
-          applyFocusedBox(ref.current, minHeight)
-          stickCaretVisible(ref.current)
+          // After browser sets caret from the tap, sync scroll to it
+          const p = ref.current.selectionEnd ?? ref.current.value.length
+          preferEndRef.current = p >= ref.current.value.length - 1
+          syncFocused()
           placeOnce(ref.current)
           placedRef.current = true
         }, 350)
