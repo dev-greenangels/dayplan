@@ -6,58 +6,76 @@ import {
   ensureEmptyFocusPrefix,
 } from '@/lib/soft-numbering'
 
-const KEYBOARD_GAP = 16
-
-function viewportBottom(): number {
-  const vv = window.visualViewport
-  if (vv) return vv.offsetTop + vv.height
-  return window.innerHeight
+function vvHeight(): number {
+  return window.visualViewport?.height ?? window.innerHeight
 }
 
-function viewportTop(): number {
-  return window.visualViewport?.offsetTop ?? 0
+function scroller() {
+  return document.scrollingElement || document.documentElement
 }
 
-/** Grow to full content — no internal scroll; keep page scroll stable while height changes. */
-function growToContent(el: HTMLTextAreaElement, minHeight: number) {
-  const scroller = document.scrollingElement || document.documentElement
-  const beforeScroll = scroller.scrollTop
-  const beforeTop = el.getBoundingClientRect().top
-
-  el.style.maxHeight = 'none'
+/** Blurred: full content visible on the page (no internal scroll). */
+function expandFull(el: HTMLTextAreaElement, minHeight: number) {
+  const s = scroller()
+  const y0 = s.scrollTop
+  const top0 = el.getBoundingClientRect().top
+  el.style.maxHeight = ''
   el.style.overflowY = 'hidden'
   el.style.height = 'auto'
-  const next = Math.max(minHeight, el.scrollHeight)
-  el.style.height = `${next}px`
-
-  const afterTop = el.getBoundingClientRect().top
-  const dy = afterTop - beforeTop
-  if (dy !== 0) scroller.scrollTop = beforeScroll + dy
-}
-
-/** Keep the caret / bottom of the field above the soft keyboard. */
-function keepAboveKeyboard(el: HTMLTextAreaElement) {
-  const topLimit = viewportTop() + 8
-  const bottomLimit = viewportBottom() - KEYBOARD_GAP
-  const rect = el.getBoundingClientRect()
-
-  if (rect.bottom > bottomLimit) {
-    window.scrollBy(0, rect.bottom - bottomLimit)
-  } else if (rect.top < topLimit) {
-    window.scrollBy(0, rect.top - topLimit)
-  }
-
-  // If still taller than visible area, pin bottom to keyboard so typing stays visible
-  const rect2 = el.getBoundingClientRect()
-  if (rect2.height > bottomLimit - topLimit && rect2.bottom > bottomLimit) {
-    window.scrollBy(0, rect2.bottom - bottomLimit)
-  }
+  el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`
+  const dy = el.getBoundingClientRect().top - top0
+  if (dy) s.scrollTop = y0 + dy
 }
 
 /**
- * Mobile-friendly textarea: grows with content (everything visible on the page),
- * preserves scroll on grow, and keeps the focused area above the keyboard.
+ * Focused: cap height to ~40% of visible viewport. Grow within that,
+ * then scroll inside so the caret stays visible.
+ * No window.scrollBy on keystrokes — that caused Android jerking.
  */
+function layoutFocused(el: HTMLTextAreaElement, minHeight: number) {
+  const maxH = Math.max(minHeight, Math.floor(vvHeight() * 0.4))
+  el.style.maxHeight = `${maxH}px`
+  el.style.height = 'auto'
+  const natural = Math.max(minHeight, el.scrollHeight)
+  const next = Math.min(natural, maxH)
+  el.style.height = `${next}px`
+  el.style.overflowY = natural > maxH + 1 ? 'auto' : 'hidden'
+
+  if (natural > maxH) {
+    const atEnd = (el.selectionEnd ?? 0) >= el.value.length - 1
+    if (atEnd) el.scrollTop = el.scrollHeight
+    else scrollCaretLine(el)
+  }
+}
+
+function scrollCaretLine(el: HTMLTextAreaElement) {
+  try {
+    const pos = el.selectionEnd ?? el.value.length
+    const cs = window.getComputedStyle(el)
+    const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.45 || 22
+    const padTop = parseFloat(cs.paddingTop) || 0
+    const lines = el.value.slice(0, pos).split('\n').length
+    const caretY = padTop + (lines - 1) * line
+    const viewBottom = el.scrollTop + el.clientHeight - line
+    if (caretY > viewBottom) el.scrollTop = caretY - el.clientHeight + line * 1.5
+    else if (caretY < el.scrollTop) el.scrollTop = Math.max(0, caretY - line)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** One-shot: place field in the upper-middle of the visible viewport. */
+function scrollFieldIntoView(el: HTMLTextAreaElement) {
+  const vv = window.visualViewport
+  const viewTop = vv?.offsetTop ?? 0
+  const viewH = vv?.height ?? window.innerHeight
+  const mid = viewTop + viewH * 0.32
+  const rect = el.getBoundingClientRect()
+  const target = mid - Math.min(rect.height, viewH * 0.3) / 2
+  const delta = rect.top - target
+  if (Math.abs(delta) > 20) window.scrollBy(0, delta)
+}
+
 export default function AutoGrowTextarea({
   value,
   disabled,
@@ -86,46 +104,42 @@ export default function AutoGrowTextarea({
   const ref = useRef<HTMLTextAreaElement>(null)
   const focusedRef = useRef(false)
   const rafRef = useRef(0)
+  const focusTimerRef = useRef(0)
+  const lastVvHRef = useRef(0)
 
-  const layout = useCallback(
-    (opts?: { pinKeyboard?: boolean }) => {
-      const el = ref.current
-      if (!el) return
-      growToContent(el, minHeight)
-      if (opts?.pinKeyboard !== false && focusedRef.current) {
-        keepAboveKeyboard(el)
-      }
-    },
-    [minHeight]
-  )
+  const layout = useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    if (focusedRef.current) layoutFocused(el, minHeight)
+    else expandFull(el, minHeight)
+  }, [minHeight])
 
-  const scheduleLayout = useCallback(
-    (opts?: { pinKeyboard?: boolean }) => {
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = requestAnimationFrame(() => layout(opts))
-    },
-    [layout]
-  )
+  const scheduleLayout = useCallback(() => {
+    cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(layout)
+  }, [layout])
 
   useEffect(() => {
-    layout({ pinKeyboard: focusedRef.current })
+    layout()
   }, [value, layout])
 
   useEffect(() => {
-    const onVv = () => {
-      if (focusedRef.current) scheduleLayout()
+    const onVvResize = () => {
+      if (!focusedRef.current || !ref.current) return
+      const h = vvHeight()
+      if (Math.abs(h - lastVvHRef.current) < 40) return
+      lastVvHRef.current = h
+      layout()
+      scrollFieldIntoView(ref.current)
     }
-    const vv = window.visualViewport
-    vv?.addEventListener('resize', onVv)
-    vv?.addEventListener('scroll', onVv)
-    window.addEventListener('orientationchange', onVv)
+    window.visualViewport?.addEventListener('resize', onVvResize)
     return () => {
-      vv?.removeEventListener('resize', onVv)
-      vv?.removeEventListener('scroll', onVv)
-      window.removeEventListener('orientationchange', onVv)
+      window.visualViewport?.removeEventListener('resize', onVvResize)
       cancelAnimationFrame(rafRef.current)
+      window.clearTimeout(focusTimerRef.current)
+      document.documentElement.classList.remove('dp-field-focused')
     }
-  }, [scheduleLayout])
+  }, [layout])
 
   function setCaret(pos: number) {
     const el = ref.current
@@ -152,7 +166,6 @@ export default function AutoGrowTextarea({
         onChange(e.target.value)
         scheduleLayout()
       }}
-      onInput={() => scheduleLayout()}
       onKeyDown={e => {
         if (!softNumbering || disabled) return
         if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return
@@ -168,27 +181,33 @@ export default function AutoGrowTextarea({
       }}
       onBlur={e => {
         focusedRef.current = false
-        growToContent(e.currentTarget, minHeight)
+        window.clearTimeout(focusTimerRef.current)
+        document.documentElement.classList.remove('dp-field-focused')
+        expandFull(e.currentTarget, minHeight)
         onBlur?.(e.target.value)
       }}
       onFocus={e => {
         focusedRef.current = true
+        lastVvHRef.current = vvHeight()
+        document.documentElement.classList.add('dp-field-focused')
         if (softNumbering && !disabled) {
           const starter = ensureEmptyFocusPrefix(e.currentTarget.value)
           if (starter) {
             onChange(starter)
             setCaret(starter.length)
-            return
           }
         }
         onFocus?.()
-        // Delay so iOS keyboard / visualViewport settle
-        scheduleLayout()
-        window.setTimeout(() => scheduleLayout(), 50)
-        window.setTimeout(() => scheduleLayout(), 300)
+        layout()
+        window.clearTimeout(focusTimerRef.current)
+        focusTimerRef.current = window.setTimeout(() => {
+          if (!focusedRef.current || !ref.current) return
+          lastVvHRef.current = vvHeight()
+          layout()
+          scrollFieldIntoView(ref.current)
+        }, 320)
       }}
       className={`${className ?? ''} touch-manipulation [overflow-anchor:none]`}
-      style={{ overflowY: 'hidden', maxHeight: 'none' }}
     />
   )
 }

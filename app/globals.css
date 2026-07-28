@@ -230,7 +230,6 @@
     .app-main {
       padding-left: 1rem;
       padding-right: 1rem;
-      /* Extra room so focused fields can scroll above keyboard + bottom bars */
       padding-bottom: calc(6rem + env(safe-area-inset-bottom));
     }
     .glass-card {
@@ -240,6 +239,12 @@
       padding-inline: 0.25rem;
       overflow-anchor: none;
       padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+    }
+  }
+  /* Hide fixed bottom chrome while typing — CSS backup for Android */
+  @media (max-width: 1279px) {
+    html.dp-field-focused .plan-bottom-bar {
+      display: none !important;
     }
   }
   @keyframes scale-in {

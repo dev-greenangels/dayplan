@@ -359,7 +359,7 @@ export default function EmployeeDashboard({
   )
 
   return (
-    <div className="mx-auto max-w-lg pb-24 xl:pb-8">
+    <div className="mx-auto max-w-lg pb-32 xl:pb-8">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground">
@@ -545,7 +545,7 @@ export default function EmployeeDashboard({
 
       {teamId && selectedRow && !keyboardOpen && (
         <div
-          className="fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
+          className="plan-bottom-bar fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
           style={{ paddingBottom: 'max(0.35rem, env(safe-area-inset-bottom))' }}
         >
           <div className="boty-glass mx-auto flex max-w-lg justify-center rounded-lg px-1 py-1">

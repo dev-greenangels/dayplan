@@ -1690,7 +1690,7 @@ export default function TeamPlanBoard({
 
       {isAdmin && !keyboardOpen && (
         <div
-          className="fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
+          className="plan-bottom-bar fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
           style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
         >
           <div className="boty-glass mx-auto flex max-w-[1600px] items-stretch justify-around gap-0.5 rounded-lg px-1.5 py-2">
@@ -1776,7 +1776,7 @@ export default function TeamPlanBoard({
 
       {!isAdmin && !keyboardOpen && (
         <div
-          className="fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
+          className="plan-bottom-bar fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
           style={{ paddingBottom: 'max(0.35rem, env(safe-area-inset-bottom))' }}
         >
           <div className="boty-glass mx-auto flex max-w-[1600px] justify-center rounded-lg px-1 py-1">
