@@ -206,6 +206,7 @@ export async function POST(req: NextRequest) {
       pushSent = await sendPushToUserIds(admin as Parameters<typeof sendPushToUserIds>[0], pushLeaderIds, {
         title: 'Звіт керівництву',
         body: `${fromName} · ${team.name} · ${dateStr}`,
+        url: `/teams/${teamId}/plans/${date}`,
       })
     }
 

@@ -37,7 +37,7 @@ type Args = {
   setDigestReceipts: Dispatch<SetStateAction<DigestReceipts>>
   setLocalRows: (updater: (prev: PlanRealtimeRow[]) => PlanRealtimeRow[]) => void
   dirtyFieldsRef: MutableRefObject<Set<string>>
-  /** Mark employee as having signed in (clears «ще не входив»). */
+  /** Mark employee as having signed in (clears «не входив»). */
   onProfileSignedIn?: (userId: string) => void
 }
 

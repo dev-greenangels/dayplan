@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getApiSession, assertAdminApi, canManageTeam } from '@/lib/auth'
 import { isMailConfigured, sendAppMail } from '@/lib/mail'
-import { getTeamLeadersForNotify, isPushConfigured, sendPushPerUser, sendPushToUserIds } from '@/lib/push'
+import { getWorkerSendAckUserIds, isPushConfigured, sendPushPerUser, sendPushToUserIds } from '@/lib/push'
 import { getNotifyPrefsByUserIds } from '@/lib/notify-prefs'
 import { formatUkDate } from '@/lib/format-date'
 import { escapeHtml, formatPlanDateDots } from '@/lib/email-plan-html'
@@ -40,7 +40,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Немає доступу' }, { status: 403 })
     }
 
-    const { data: team } = await supabase.from('teams').select('name').eq('id', teamId).single()
+    const { data: team } = await supabase.from('teams').select('name, work_mode').eq('id', teamId).single()
+    const planUrl = `/teams/${teamId}/plans/${date}`
+    const workerUrl =
+      team?.work_mode === 'individual' ? `/dashboard?date=${date}` : planUrl
 
     const { data: plan } = await supabase
       .from('day_plans')
@@ -108,6 +111,7 @@ export async function POST(req: NextRequest) {
           userId: r.employee_id,
           title: `План на ${titleDate}`,
           body: (r.planned || 'Нове завдання').slice(0, 100),
+          url: workerUrl,
         }))
       )
       pushedIds.push(...pushed)
@@ -132,20 +136,16 @@ export async function POST(req: NextRequest) {
 
     if (sent > 0) {
       const titleDate = formatUkDate(date, { weekday: false })
-      const leaders = await getTeamLeadersForNotify(supabase, teamId)
-      const leaderPrefs = await getNotifyPrefsByUserIds(
-        supabase,
-        leaders.map(l => l.user_id)
-      )
-      const pushLeaders = leaders
-        .filter(l => {
-          const prefs = leaderPrefs.get(l.user_id)
-          return prefs?.push !== false && prefs?.workerSendPush !== false
-        })
-        .map(l => l.user_id)
+      const recipientIds = await getWorkerSendAckUserIds(supabase, teamId)
+      const leaderPrefs = await getNotifyPrefsByUserIds(supabase, recipientIds)
+      const pushLeaders = recipientIds.filter(id => {
+        const prefs = leaderPrefs.get(id)
+        return prefs?.push !== false && prefs?.workerSendPush !== false
+      })
       await sendPushToUserIds(supabase, pushLeaders, {
         title: `Завдання на ${titleDate}`,
         body: `Команда «${team?.name ?? ''}» отримала завдання на ${titleDate}`,
+        url: planUrl,
       })
     }
 

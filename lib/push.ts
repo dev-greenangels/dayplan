@@ -51,6 +51,26 @@ export async function getTeamLeadersForNotify(
   return [...byId.values()]
 }
 
+/**
+ * Recipients for «tasks were sent to workers» ack push:
+ * team_admins for the team + every super_admin (even if not listed on the team).
+ */
+export async function getWorkerSendAckUserIds(
+  supabase: Supabase,
+  teamId: string
+): Promise<string[]> {
+  const leaders = await getTeamLeadersForNotify(supabase, teamId)
+  const ids = new Set(leaders.map(l => l.user_id))
+  const { data: bosses } = await supabase
+    .from('profiles')
+    .select('id')
+    .eq('role', 'super_admin')
+  for (const b of bosses ?? []) {
+    if (b.id) ids.add(b.id)
+  }
+  return [...ids]
+}
+
 export async function getTeamLeaderUserIds(supabase: Supabase, teamId: string): Promise<string[]> {
   return (await getTeamLeadersForNotify(supabase, teamId)).map(d => d.user_id)
 }
@@ -58,7 +78,7 @@ export async function getTeamLeaderUserIds(supabase: Supabase, teamId: string): 
 export async function sendPushToUserIds(
   supabase: Supabase,
   userIds: string[],
-  payload: { title: string; body: string; icon?: string }
+  payload: { title: string; body: string; icon?: string; url?: string }
 ): Promise<number> {
   if (!ensureVapid() || userIds.length === 0) return 0
 
@@ -77,6 +97,7 @@ export async function sendPushToUserIds(
             title: payload.title,
             body: payload.body,
             icon: payload.icon ?? '/web-app-manifest-192x192.png',
+            url: payload.url || '/',
           })
         )
         sent++
@@ -93,7 +114,7 @@ export async function sendPushToUserIds(
 /** Per-user payloads (e.g. different plan text per employee). Returns unique user ids that got at least one push. */
 export async function sendPushPerUser(
   supabase: Supabase,
-  items: { userId: string; title: string; body: string }[]
+  items: { userId: string; title: string; body: string; url?: string }[]
 ): Promise<string[]> {
   if (!ensureVapid() || items.length === 0) return []
   const byUser = new Map(items.map(i => [i.userId, i]))
@@ -116,6 +137,7 @@ export async function sendPushPerUser(
             title: item.title,
             body: item.body,
             icon: '/web-app-manifest-192x192.png',
+            url: item.url || '/',
           })
         )
         pushed.add(sub.user_id)

@@ -12,6 +12,7 @@ import {
 } from '@/lib/format-date'
 import { updateTaskRowFields } from '@/app/actions/plans'
 import AutoGrowTextarea from '@/components/auto-grow-textarea'
+import { useMobileKeyboardOpen } from '@/hooks/use-mobile-keyboard-open'
 
 type TaskRowWithPlan = TaskRow & { day_plans: DayPlan | null }
 
@@ -52,6 +53,7 @@ export default function EmployeeDashboard({
   )
   const [reportInvalid, setReportInvalid] = useState(false)
   const frozen = selectedDate < todayISO() && !!reportSentAt
+  const keyboardOpen = useMobileKeyboardOpen()
 
   const reportRef = useRef(report)
   const notesRef = useRef(notes)
@@ -541,7 +543,7 @@ export default function EmployeeDashboard({
         </div>
       )}
 
-      {teamId && selectedRow && (
+      {teamId && selectedRow && !keyboardOpen && (
         <div
           className="fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
           style={{ paddingBottom: 'max(0.35rem, env(safe-area-inset-bottom))' }}

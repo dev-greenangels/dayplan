@@ -23,6 +23,7 @@ import UserAvatar, { PushStatusBell } from '@/components/user-avatar'
 import { useToast } from '@/components/toast-provider'
 import { usePlanChromeLock } from '@/components/plan-chrome-lock'
 import { usePlanRealtimeSync } from '@/hooks/use-plan-realtime-sync'
+import { useMobileKeyboardOpen } from '@/hooks/use-mobile-keyboard-open'
 import {
   PlanMonthCalendarGrid,
   usePlanScheduleChromeHost,
@@ -157,6 +158,7 @@ export default function TeamPlanBoard({
   const router = useRouter()
   const toast = useToast()
   const { chromeBlocked, setChromeBlocked } = usePlanChromeLock()
+  const keyboardOpen = useMobileKeyboardOpen()
   const [isPending, startTransition] = useTransition()
   const [sending, setSending] = useState(false)
   const [digestSending, setDigestSending] = useState(false)
@@ -1686,7 +1688,7 @@ export default function TeamPlanBoard({
         onCancel={() => setRemoveTarget(null)}
       />
 
-      {isAdmin && (
+      {isAdmin && !keyboardOpen && (
         <div
           className="fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
           style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
@@ -1772,7 +1774,7 @@ export default function TeamPlanBoard({
         </div>
       )}
 
-      {!isAdmin && (
+      {!isAdmin && !keyboardOpen && (
         <div
           className="fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
           style={{ paddingBottom: 'max(0.35rem, env(safe-area-inset-bottom))' }}
@@ -1922,10 +1924,12 @@ function RowIdentity({
         )}
         {isAdmin && (row.plan_email_sent_at || row.plan_push_sent_at || notLoggedIn) && (
           <div
-            className={`mt-1 flex items-start gap-2 text-[10px] font-medium ${
+            className={`mt-1 flex text-[10px] font-medium ${
               (row.plan_email_sent_at || row.plan_push_sent_at) && notLoggedIn
-                ? 'justify-between'
-                : ''
+                ? removeCorner
+                  ? 'w-full items-start justify-between gap-2'
+                  : 'flex-col items-start gap-0.5'
+                : 'items-start gap-2'
             }`}
           >
             {(row.plan_email_sent_at || row.plan_push_sent_at) && (
@@ -1945,11 +1949,17 @@ function RowIdentity({
               </div>
             )}
             {notLoggedIn && (
-              <div className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap text-amber-700/90">
+              <div
+                className={`inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap text-amber-700/90 ${
+                  removeCorner && (row.plan_email_sent_at || row.plan_push_sent_at) ? 'ml-auto' : ''
+                }`}
+                title="Ще не входив в додаток"
+              >
                 <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M18 12H9m0 0l3-3m-3 3l3 3" />
                 </svg>
-                ще не входив
+                не входив
               </div>
             )}
           </div>

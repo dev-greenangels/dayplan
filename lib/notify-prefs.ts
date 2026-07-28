@@ -5,7 +5,7 @@ type Supabase = Awaited<ReturnType<typeof createClient>>
 export type NotifyPrefs = {
   email: boolean
   push: boolean
-  /** Leaders only: ack push when workers receive tasks (default true) */
+  /** Leaders / шеф: ack push when workers receive tasks (default true). Шеф gets it even outside team_admins. */
   workerSendPush: boolean
 }
 

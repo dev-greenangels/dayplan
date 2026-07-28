@@ -18,7 +18,8 @@ self.addEventListener('push', function (event) {
   const options = {
     body: data.body || '',
     icon: data.icon || '/web-app-manifest-192x192.png',
-    badge: '/favicon-96x96.png',
+    // Android status-bar / left icon: white silhouette on transparent (not a color logo)
+    badge: data.badge || '/notification-badge.png',
     vibrate: [100, 50, 100],
     data: { url: data.url || '/' },
   }
@@ -28,6 +29,30 @@ self.addEventListener('push', function (event) {
 
 self.addEventListener('notificationclick', function (event) {
   event.notification.close()
-  const url = event.notification.data?.url || '/'
-  event.waitUntil(clients.openWindow(url))
+  const targetUrl = event.notification.data?.url || '/'
+
+  event.waitUntil(
+    (async () => {
+      const allClients = await clients.matchAll({ type: 'window', includeUncontrolled: true })
+      for (const client of allClients) {
+        if ('focus' in client) {
+          await client.focus()
+          if ('navigate' in client && typeof client.navigate === 'function') {
+            try {
+              await client.navigate(targetUrl)
+              return
+            } catch {
+              // fall through to openWindow
+            }
+          }
+          // Older clients: postMessage so the app can router.push
+          client.postMessage({ type: 'NOTIFICATION_NAVIGATE', url: targetUrl })
+          return
+        }
+      }
+      if (clients.openWindow) {
+        await clients.openWindow(targetUrl)
+      }
+    })()
+  )
 })

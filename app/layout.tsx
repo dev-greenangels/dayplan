@@ -68,6 +68,8 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: 'cover',
+  // Android Chrome: resize layout with keyboard so focused inputs don't jump to mid-screen
+  interactiveWidget: 'resizes-content',
 }
 
 export default function RootLayout({

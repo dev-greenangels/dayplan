@@ -207,6 +207,7 @@ export async function POST(req: NextRequest) {
         pushSent = await sendPushToUserIds(supabase, recipientUserIds, {
           title: 'План керівництву',
           body: body.slice(0, 120),
+          url: `/teams/${teamId}/plans/${date}`,
         })
         // Approximate which leaders got push: those with subscriptions among recipients
         const { data: subs } = await supabase

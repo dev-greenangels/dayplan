@@ -112,6 +112,20 @@ export function usePushNotifications() {
     void sync(false)
   }, [sync])
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data
+      if (!data || data.type !== 'NOTIFICATION_NAVIGATE' || typeof data.url !== 'string') return
+      const url = data.url.trim()
+      if (!url.startsWith('/')) return
+      if (window.location.pathname + window.location.search === url) return
+      window.location.assign(url)
+    }
+    navigator.serviceWorker.addEventListener('message', onMessage)
+    return () => navigator.serviceWorker.removeEventListener('message', onMessage)
+  }, [])
+
   const enable = useCallback(async () => {
     setError(null)
     await sync(true)
