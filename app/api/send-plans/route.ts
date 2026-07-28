@@ -143,7 +143,7 @@ export async function POST(req: NextRequest) {
         return prefs?.push !== false && prefs?.workerSendPush !== false
       })
       await sendPushToUserIds(supabase, pushLeaders, {
-        title: `Завдання на ${titleDate}`,
+        title: 'Відправлено завдання',
         body: `Команда «${team?.name ?? ''}» отримала завдання на ${titleDate}`,
         url: planUrl,
       })

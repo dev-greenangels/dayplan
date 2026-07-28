@@ -14,7 +14,7 @@ function scroller() {
   return document.scrollingElement || document.documentElement
 }
 
-/** Blurred: full content visible on the page (no internal scroll). */
+/** Blurred: show full text on the page. */
 function expandFull(el: HTMLTextAreaElement, minHeight: number) {
   const s = scroller()
   const y0 = s.scrollTop
@@ -28,27 +28,23 @@ function expandFull(el: HTMLTextAreaElement, minHeight: number) {
 }
 
 /**
- * Focused: cap height to ~40% of visible viewport. Grow within that,
- * then scroll inside so the caret stays visible.
- * No window.scrollBy on keystrokes — that caused Android jerking.
+ * Focused on iOS/Android: keep a STABLE height (no grow/collapse per key).
+ * Changing height while focused makes Safari jump the page to the top —
+ * especially for the last field above the keyboard.
  */
-function layoutFocused(el: HTMLTextAreaElement, minHeight: number) {
-  const maxH = Math.max(minHeight, Math.floor(vvHeight() * 0.4))
-  el.style.maxHeight = `${maxH}px`
-  el.style.height = 'auto'
-  const natural = Math.max(minHeight, el.scrollHeight)
-  const next = Math.min(natural, maxH)
-  el.style.height = `${next}px`
-  el.style.overflowY = natural > maxH + 1 ? 'auto' : 'hidden'
-
-  if (natural > maxH) {
-    const atEnd = (el.selectionEnd ?? 0) >= el.value.length - 1
-    if (atEnd) el.scrollTop = el.scrollHeight
-    else scrollCaretLine(el)
-  }
+function applyFocusedBox(el: HTMLTextAreaElement, minHeight: number) {
+  const boxH = Math.max(minHeight, Math.floor(vvHeight() * 0.38))
+  el.style.height = `${boxH}px`
+  el.style.maxHeight = `${boxH}px`
+  el.style.overflowY = 'auto'
 }
 
-function scrollCaretLine(el: HTMLTextAreaElement) {
+function stickCaretVisible(el: HTMLTextAreaElement) {
+  const atEnd = (el.selectionEnd ?? 0) >= el.value.length - 1
+  if (atEnd) {
+    el.scrollTop = el.scrollHeight
+    return
+  }
   try {
     const pos = el.selectionEnd ?? el.value.length
     const cs = window.getComputedStyle(el)
@@ -64,16 +60,19 @@ function scrollCaretLine(el: HTMLTextAreaElement) {
   }
 }
 
-/** One-shot: place field in the upper-middle of the visible viewport. */
-function scrollFieldIntoView(el: HTMLTextAreaElement) {
+/** Place field in the visible area once (after keyboard opens). */
+function placeOnce(el: HTMLTextAreaElement) {
   const vv = window.visualViewport
   const viewTop = vv?.offsetTop ?? 0
   const viewH = vv?.height ?? window.innerHeight
-  const mid = viewTop + viewH * 0.32
   const rect = el.getBoundingClientRect()
-  const target = mid - Math.min(rect.height, viewH * 0.3) / 2
-  const delta = rect.top - target
-  if (Math.abs(delta) > 20) window.scrollBy(0, delta)
+  // Keep field in the upper half of the visible viewport, above keyboard
+  const desiredTop = viewTop + Math.min(72, viewH * 0.12)
+  const delta = rect.top - desiredTop
+  if (Math.abs(delta) > 16) {
+    const s = scroller()
+    s.scrollTop += delta
+  }
 }
 
 export default function AutoGrowTextarea({
@@ -105,32 +104,36 @@ export default function AutoGrowTextarea({
   const focusedRef = useRef(false)
   const rafRef = useRef(0)
   const focusTimerRef = useRef(0)
+  const placedRef = useRef(false)
   const lastVvHRef = useRef(0)
 
-  const layout = useCallback(() => {
+  const syncIdleHeight = useCallback(() => {
     const el = ref.current
-    if (!el) return
-    if (focusedRef.current) layoutFocused(el, minHeight)
-    else expandFull(el, minHeight)
+    if (!el || focusedRef.current) return
+    expandFull(el, minHeight)
   }, [minHeight])
 
-  const scheduleLayout = useCallback(() => {
-    cancelAnimationFrame(rafRef.current)
-    rafRef.current = requestAnimationFrame(layout)
-  }, [layout])
-
   useEffect(() => {
-    layout()
-  }, [value, layout])
+    // Only resize when NOT focused — avoids iOS scroll jump on each key
+    if (!focusedRef.current) syncIdleHeight()
+    else {
+      const el = ref.current
+      if (el) stickCaretVisible(el)
+    }
+  }, [value, syncIdleHeight])
 
   useEffect(() => {
     const onVvResize = () => {
       if (!focusedRef.current || !ref.current) return
       const h = vvHeight()
-      if (Math.abs(h - lastVvHRef.current) < 40) return
+      if (Math.abs(h - lastVvHRef.current) < 50) return
       lastVvHRef.current = h
-      layout()
-      scrollFieldIntoView(ref.current)
+      applyFocusedBox(ref.current, minHeight)
+      stickCaretVisible(ref.current)
+      if (!placedRef.current) {
+        placeOnce(ref.current)
+        placedRef.current = true
+      }
     }
     window.visualViewport?.addEventListener('resize', onVvResize)
     return () => {
@@ -139,14 +142,14 @@ export default function AutoGrowTextarea({
       window.clearTimeout(focusTimerRef.current)
       document.documentElement.classList.remove('dp-field-focused')
     }
-  }, [layout])
+  }, [minHeight])
 
   function setCaret(pos: number) {
     const el = ref.current
     if (!el) return
     requestAnimationFrame(() => {
       el.setSelectionRange(pos, pos)
-      layout()
+      stickCaretVisible(el)
     })
   }
 
@@ -164,7 +167,11 @@ export default function AutoGrowTextarea({
       autoCorrect="on"
       onChange={e => {
         onChange(e.target.value)
-        scheduleLayout()
+        // Keep caret visible inside the fixed box — do not touch page scroll
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = requestAnimationFrame(() => {
+          if (ref.current && focusedRef.current) stickCaretVisible(ref.current)
+        })
       }}
       onKeyDown={e => {
         if (!softNumbering || disabled) return
@@ -181,6 +188,7 @@ export default function AutoGrowTextarea({
       }}
       onBlur={e => {
         focusedRef.current = false
+        placedRef.current = false
         window.clearTimeout(focusTimerRef.current)
         document.documentElement.classList.remove('dp-field-focused')
         expandFull(e.currentTarget, minHeight)
@@ -188,8 +196,10 @@ export default function AutoGrowTextarea({
       }}
       onFocus={e => {
         focusedRef.current = true
+        placedRef.current = false
         lastVvHRef.current = vvHeight()
         document.documentElement.classList.add('dp-field-focused')
+
         if (softNumbering && !disabled) {
           const starter = ensureEmptyFocusPrefix(e.currentTarget.value)
           if (starter) {
@@ -198,14 +208,20 @@ export default function AutoGrowTextarea({
           }
         }
         onFocus?.()
-        layout()
+
+        // Lock height immediately so Safari won't reflow-jump while typing
+        applyFocusedBox(e.currentTarget, minHeight)
+        stickCaretVisible(e.currentTarget)
+
         window.clearTimeout(focusTimerRef.current)
         focusTimerRef.current = window.setTimeout(() => {
           if (!focusedRef.current || !ref.current) return
           lastVvHRef.current = vvHeight()
-          layout()
-          scrollFieldIntoView(ref.current)
-        }, 320)
+          applyFocusedBox(ref.current, minHeight)
+          stickCaretVisible(ref.current)
+          placeOnce(ref.current)
+          placedRef.current = true
+        }, 350)
       }}
       className={`${className ?? ''} touch-manipulation [overflow-anchor:none]`}
     />
