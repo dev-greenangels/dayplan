@@ -16,30 +16,14 @@ function scroller() {
   return document.scrollingElement || document.documentElement
 }
 
-/**
- * iOS-safe content height after a constrained box.
- * Probe at max height with overflow hidden — scrollHeight then reflects full text
- * without collapsing to 0 (which jumps the page while focused).
- */
-function measureContentHeight(
-  el: HTMLTextAreaElement,
-  minHeight: number,
-  probeMax: number
-): number {
-  const prevH = el.style.height
-  const prevMax = el.style.maxHeight
-  const prevOv = el.style.overflowY
-  el.style.overflowY = 'hidden'
-  el.style.maxHeight = 'none'
-  el.style.height = `${probeMax}px`
-  const h = Math.max(minHeight, el.scrollHeight)
-  el.style.height = prevH
-  el.style.maxHeight = prevMax
-  el.style.overflowY = prevOv
-  return h
+function focusMaxHeight(minHeight: number) {
+  return Math.max(minHeight, Math.floor(vvHeight() * FOCUS_MAX_RATIO))
 }
 
-/** Blurred: full text visible — no max-height clip. */
+/**
+ * Blurred: full text on the page.
+ * height:0 probe fixes iOS scrollHeight after a focused constrained box.
+ */
 function expandFull(el: HTMLTextAreaElement, minHeight: number) {
   const s = scroller()
   const y0 = s.scrollTop
@@ -47,7 +31,6 @@ function expandFull(el: HTMLTextAreaElement, minHeight: number) {
 
   el.style.overflowY = 'hidden'
   el.style.maxHeight = 'none'
-  // Force iOS to recompute full scrollHeight after focused constraint
   el.style.height = '0px'
   const next = Math.max(minHeight, el.scrollHeight)
   el.style.height = `${next}px`
@@ -59,55 +42,61 @@ function expandFull(el: HTMLTextAreaElement, minHeight: number) {
 }
 
 /**
- * Focused: grow with content up to 50% of visible viewport, then internal scroll.
- * Short text → short box; long text → capped box + inner scroll.
+ * Lock focused box once (on focus / keyboard resize only).
  */
-function applyFocusedSize(el: HTMLTextAreaElement, minHeight: number) {
-  const maxH = Math.max(minHeight, Math.floor(vvHeight() * FOCUS_MAX_RATIO))
-  const s = scroller()
-  const y0 = s.scrollTop
-  const top0 = el.getBoundingClientRect().top
-
-  const natural = measureContentHeight(el, minHeight, maxH)
+function lockFocusedBox(el: HTMLTextAreaElement, minHeight: number) {
+  const maxH = focusMaxHeight(minHeight)
+  el.style.overflowY = 'hidden'
+  el.style.maxHeight = 'none'
+  el.style.height = 'auto'
+  const natural = Math.max(minHeight, el.scrollHeight)
   const next = Math.min(natural, maxH)
   el.style.maxHeight = `${maxH}px`
   el.style.height = `${next}px`
   el.style.overflowY = natural > maxH + 1 ? 'auto' : 'hidden'
-
-  const dy = el.getBoundingClientRect().top - top0
-  if (dy) s.scrollTop = y0 + dy
-  return { natural, maxH, next }
+  return maxH
 }
 
-function lineMetrics(el: HTMLTextAreaElement) {
+/**
+ * While typing: only GROW height up to max — never shrink, never height:auto.
+ * Shrinking / remeasure was the mid-keystroke jerk.
+ */
+function growFocusedIfNeeded(
+  el: HTMLTextAreaElement,
+  maxH: number,
+  minHeight: number
+) {
+  el.style.maxHeight = `${maxH}px`
+  el.style.overflowY = 'auto'
+  const content = Math.max(minHeight, el.scrollHeight)
+  const cur = el.offsetHeight
+  if (content > cur + 1 && cur < maxH) {
+    el.style.height = `${Math.min(content, maxH)}px`
+  }
+  el.style.overflowY = content > maxH + 1 ? 'auto' : 'hidden'
+}
+
+function lineHeightPx(el: HTMLTextAreaElement) {
   const cs = window.getComputedStyle(el)
-  const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.45 || 22
-  const padTop = parseFloat(cs.paddingTop) || 0
-  return { line, padTop }
+  return parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.45 || 22
 }
 
-function caretOffsetY(el: HTMLTextAreaElement, pos: number) {
-  const { line, padTop } = lineMetrics(el)
-  const lines = el.value.slice(0, pos).split('\n').length
-  return padTop + (lines - 1) * line
-}
-
-/** Scroll inside the box so `pos` is visible. */
 function scrollPosIntoView(el: HTMLTextAreaElement, pos: number) {
   if (el.scrollHeight <= el.clientHeight + 1) return
-  const { line } = lineMetrics(el)
-  const caretY = caretOffsetY(el, pos)
+  const line = lineHeightPx(el)
+  const padTop = parseFloat(window.getComputedStyle(el).paddingTop) || 0
+  const lines = el.value.slice(0, pos).split('\n').length
+  const caretY = padTop + (lines - 1) * line
   const viewTop = el.scrollTop
-  const viewBottom = viewTop + el.clientHeight - line * 1.25
+  const viewBottom = viewTop + el.clientHeight - line * 1.2
   if (caretY > viewBottom) el.scrollTop = caretY - el.clientHeight + line * 2
-  else if (caretY < viewTop + line * 0.5) el.scrollTop = Math.max(0, caretY - line)
+  else if (caretY < viewTop + line * 0.4) el.scrollTop = Math.max(0, caretY - line)
 }
 
 function scrollToEnd(el: HTMLTextAreaElement) {
   el.scrollTop = el.scrollHeight
 }
 
-/** Place field once in the visible area above the keyboard. */
 function placeOnce(el: HTMLTextAreaElement) {
   const vv = window.visualViewport
   const viewTop = vv?.offsetTop ?? 0
@@ -115,7 +104,7 @@ function placeOnce(el: HTMLTextAreaElement) {
   const rect = el.getBoundingClientRect()
   const desiredTop = viewTop + Math.min(64, viewH * 0.1)
   const delta = rect.top - desiredTop
-  if (Math.abs(delta) > 16) scroller().scrollTop += delta
+  if (Math.abs(delta) > 20) scroller().scrollTop += delta
 }
 
 export default function AutoGrowTextarea({
@@ -150,43 +139,48 @@ export default function AutoGrowTextarea({
   const blurTimerRef = useRef(0)
   const placedRef = useRef(false)
   const lastVvHRef = useRef(0)
-  /** After focus: prefer end vs caret location */
   const preferEndRef = useRef(false)
+  const lockedMaxRef = useRef(0)
 
-  const syncIdleHeight = useCallback(() => {
+  const syncIdle = useCallback(() => {
     const el = ref.current
     if (!el || focusedRef.current) return
     expandFull(el, minHeight)
   }, [minHeight])
 
-  const syncFocused = useCallback(() => {
+  /** Only scroll inside — never touch height while typing. */
+  const syncCaretOnly = useCallback(() => {
     const el = ref.current
     if (!el || !focusedRef.current) return
-    applyFocusedSize(el, minHeight)
+    if (el.scrollHeight <= el.clientHeight + 1) return
     const pos = el.selectionEnd ?? el.value.length
     if (preferEndRef.current || pos >= el.value.length - 1) {
-      scrollToEnd(el)
+      const maxScroll = el.scrollHeight - el.clientHeight
+      if (el.scrollTop < maxScroll - 2) el.scrollTop = maxScroll
     } else {
       scrollPosIntoView(el, pos)
     }
-  }, [minHeight])
+  }, [])
 
   useEffect(() => {
     if (focusedRef.current) {
+      // Typing: caret only. Do NOT relock height (that jerks).
       cancelAnimationFrame(rafRef.current)
-      rafRef.current = requestAnimationFrame(syncFocused)
+      rafRef.current = requestAnimationFrame(syncCaretOnly)
     } else {
-      syncIdleHeight()
+      syncIdle()
     }
-  }, [value, syncFocused, syncIdleHeight])
+  }, [value, syncCaretOnly, syncIdle])
 
   useEffect(() => {
     const onVvResize = () => {
       if (!focusedRef.current || !ref.current) return
       const h = vvHeight()
-      if (Math.abs(h - lastVvHRef.current) < 40) return
+      if (Math.abs(h - lastVvHRef.current) < 60) return
       lastVvHRef.current = h
-      syncFocused()
+      // Keyboard open/close only — relock once
+      lockedMaxRef.current = lockFocusedBox(ref.current, minHeight)
+      syncCaretOnly()
       if (!placedRef.current) {
         placeOnce(ref.current)
         placedRef.current = true
@@ -200,7 +194,7 @@ export default function AutoGrowTextarea({
       window.clearTimeout(blurTimerRef.current)
       document.documentElement.classList.remove('dp-field-focused')
     }
-  }, [syncFocused])
+  }, [minHeight, syncCaretOnly])
 
   function setCaret(pos: number) {
     const el = ref.current
@@ -208,7 +202,7 @@ export default function AutoGrowTextarea({
     requestAnimationFrame(() => {
       el.setSelectionRange(pos, pos)
       preferEndRef.current = pos >= el.value.length - 1
-      syncFocused()
+      syncCaretOnly()
     })
   }
 
@@ -225,22 +219,19 @@ export default function AutoGrowTextarea({
       autoCapitalize="sentences"
       autoCorrect="on"
       onPointerDown={() => {
-        // Tap inside existing text → show that place (not force end)
         preferEndRef.current = false
       }}
       onChange={e => {
         onChange(e.target.value)
         preferEndRef.current =
           (e.target.selectionEnd ?? 0) >= e.target.value.length - 1
+        const el = e.target
+        const maxH = lockedMaxRef.current || focusMaxHeight(minHeight)
+        lockedMaxRef.current = maxH
+        // Grow-only + caret — no remeasure/shrink
+        growFocusedIfNeeded(el, maxH, minHeight)
         cancelAnimationFrame(rafRef.current)
-        rafRef.current = requestAnimationFrame(syncFocused)
-      }}
-      onSelect={e => {
-        if (!focusedRef.current) return
-        const el = e.currentTarget
-        preferEndRef.current =
-          (el.selectionEnd ?? 0) >= el.value.length - 1
-        scrollPosIntoView(el, el.selectionEnd ?? el.value.length)
+        rafRef.current = requestAnimationFrame(syncCaretOnly)
       }}
       onKeyDown={e => {
         if (!softNumbering || disabled) return
@@ -260,15 +251,15 @@ export default function AutoGrowTextarea({
         focusedRef.current = false
         placedRef.current = false
         preferEndRef.current = false
+        lockedMaxRef.current = 0
         window.clearTimeout(focusTimerRef.current)
         document.documentElement.classList.remove('dp-field-focused')
         const el = e.currentTarget
-        // Double rAF + short delay: iOS needs a tick after keyboard dismissal
         expandFull(el, minHeight)
         window.clearTimeout(blurTimerRef.current)
         blurTimerRef.current = window.setTimeout(() => {
           if (!focusedRef.current) expandFull(el, minHeight)
-        }, 50)
+        }, 80)
         onBlur?.(e.target.value)
       }}
       onFocus={e => {
@@ -285,13 +276,15 @@ export default function AutoGrowTextarea({
           if (starter) {
             preferEndRef.current = true
             onChange(starter)
+            lockedMaxRef.current = lockFocusedBox(el, minHeight)
             setCaret(starter.length)
             onFocus?.()
             window.clearTimeout(focusTimerRef.current)
             focusTimerRef.current = window.setTimeout(() => {
               if (!focusedRef.current || !ref.current) return
               lastVvHRef.current = vvHeight()
-              syncFocused()
+              lockedMaxRef.current = lockFocusedBox(ref.current, minHeight)
+              syncCaretOnly()
               placeOnce(ref.current)
               placedRef.current = true
             }, 350)
@@ -299,22 +292,22 @@ export default function AutoGrowTextarea({
           }
         }
 
-        // Empty / near-end → show end; otherwise keep tap caret location
         const pos = el.selectionStart ?? 0
         preferEndRef.current =
           wasEmpty || pos >= el.value.length - 1 || el.value.length < 8
 
         onFocus?.()
-        syncFocused()
+        lockedMaxRef.current = lockFocusedBox(el, minHeight)
+        syncCaretOnly()
 
         window.clearTimeout(focusTimerRef.current)
         focusTimerRef.current = window.setTimeout(() => {
           if (!focusedRef.current || !ref.current) return
           lastVvHRef.current = vvHeight()
-          // After browser sets caret from the tap, sync scroll to it
+          lockedMaxRef.current = lockFocusedBox(ref.current, minHeight)
           const p = ref.current.selectionEnd ?? ref.current.value.length
           preferEndRef.current = p >= ref.current.value.length - 1
-          syncFocused()
+          syncCaretOnly()
           placeOnce(ref.current)
           placedRef.current = true
         }, 350)
