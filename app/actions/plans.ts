@@ -1,23 +1,55 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { requireAdmin, requireUser, canManageTeam, canEditTeamTasks } from '@/lib/auth'
+import { requireAdmin, requireUser, canManageTeam, canEditTeamTasks, isBoss } from '@/lib/auth'
+import { applyInputTemplate } from '@/lib/column-templates'
+import { todayISO } from '@/lib/format-date'
 import type { Profile } from '@/lib/types'
 import type { createClient } from '@/lib/supabase/server'
 
-/** Deputy/boss can edit planned/shift only when team plan is unlocked. */
+type Supabase = Awaited<ReturnType<typeof createClient>>
+
+/** Deputy/boss can edit planned/shift only when this day's plan is unlocked. */
 async function allowEditingPlanTasks(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: Supabase,
   profile: Profile,
-  teamId: string
+  teamId: string,
+  date: string
 ): Promise<boolean> {
   if (!(await canEditTeamTasks(supabase, profile, teamId))) return false
   const { data } = await supabase
-    .from('teams')
+    .from('day_plans')
     .select('plan_tasks_locked')
-    .eq('id', teamId)
+    .eq('team_id', teamId)
+    .eq('plan_date', date)
     .maybeSingle()
-  return data?.plan_tasks_locked === false
+  // No plan yet / missing column → unlocked
+  return data?.plan_tasks_locked !== true
+}
+
+async function loadColumnTemplates(supabase: Supabase, teamId: string) {
+  const { data } = await supabase
+    .from('team_columns')
+    .select('key, input_template')
+    .eq('team_id', teamId)
+  const map = new Map<string, string>()
+  for (const c of data ?? []) {
+    if (c.input_template) map.set(c.key, c.input_template)
+  }
+  return map
+}
+
+function templatesForNewRow(templates: Map<string, string>) {
+  const planned = applyInputTemplate('', templates.get('planned'))
+  const completed = applyInputTemplate('', templates.get('completed'))
+  const notes = applyInputTemplate('', templates.get('notes'))
+  const extra: Record<string, string> = {}
+  for (const [key, tmpl] of templates) {
+    if (key === 'shift' || key === 'planned' || key === 'completed' || key === 'notes') continue
+    const applied = applyInputTemplate('', tmpl)
+    if (applied) extra[key] = applied
+  }
+  return { planned, completed, notes, extra }
 }
 
 export interface PlanRowInput {
@@ -44,7 +76,7 @@ export async function ensureDayPlan(
 
   const { data: existing } = await supabase
     .from('day_plans')
-    .select('id, team_id, plan_date, created_by, created_at, digest_sent_at, digest_receipts')
+    .select('id, team_id, plan_date, created_by, created_at, digest_sent_at, digest_receipts, plan_tasks_locked')
     .eq('team_id', teamId)
     .eq('plan_date', date)
     .maybeSingle()
@@ -53,8 +85,8 @@ export async function ensureDayPlan(
 
   const { data: plan, error } = await supabase
     .from('day_plans')
-    .insert({ team_id: teamId, plan_date: date, created_by: user.id, department: '' })
-    .select('id, team_id, plan_date, created_by, created_at, digest_sent_at, digest_receipts')
+    .insert({ team_id: teamId, plan_date: date, created_by: user.id, department: '', plan_tasks_locked: false })
+    .select('id, team_id, plan_date, created_by, created_at, digest_sent_at, digest_receipts, plan_tasks_locked')
     .single()
 
   if (error) return { error: error.message }
@@ -132,42 +164,65 @@ export async function saveTeamPlan(teamId: string, date: string, rows: PlanRowIn
     return { error: 'Немає доступу' }
   }
 
-  const allowEditTasks = await allowEditingPlanTasks(supabase, profile, teamId)
+  const allowEditTasks = await allowEditingPlanTasks(supabase, profile, teamId, date)
 
   const ensured = await ensureDayPlan(teamId, date, ctx)
   if (ensured.error || !ensured.plan) return { error: ensured.error ?? 'Немає плану' }
   const plan = ensured.plan
 
-  // If tasks locked / deputy cannot edit, preserve existing planned/shift from DB
-  let existingByEmployee = new Map<string, { planned: string; shift: string; extra: Record<string, string> }>()
-  if (!allowEditTasks) {
-    const { data: existing } = await supabase
-      .from('task_rows')
-      .select('employee_id, planned, shift, extra')
-      .eq('plan_id', plan.id)
-    for (const r of existing ?? []) {
-      existingByEmployee.set(r.employee_id, {
-        planned: r.planned || '',
-        shift: r.shift || '8:00-18:00',
-        extra: (r.extra as Record<string, string>) || {},
-      })
+  const isPast = date < todayISO()
+  const planDigestSent = !!(plan as { digest_sent_at?: string | null }).digest_sent_at
+  const { data: existingRows } = await supabase
+    .from('task_rows')
+    .select('employee_id, planned, shift, extra, completed, notes, report_sent_at')
+    .eq('plan_id', plan.id)
+
+  const existingByEmployee = new Map<
+    string,
+    {
+      planned: string
+      shift: string
+      extra: Record<string, string>
+      completed: string
+      notes: string
+      report_sent_at: string | null
     }
+  >()
+  for (const r of existingRows ?? []) {
+    existingByEmployee.set(r.employee_id, {
+      planned: r.planned || '',
+      shift: r.shift || '8:00-18:00',
+      extra: (r.extra as Record<string, string>) || {},
+      completed: r.completed || '',
+      notes: r.notes || '',
+      report_sent_at: r.report_sent_at ?? null,
+    })
   }
 
   if (rows.length > 0) {
     const payload = rows.map(row => {
-      const locked = existingByEmployee.get(row.employee_id)
+      const existing = existingByEmployee.get(row.employee_id)
+      const frozen = isPast && (planDigestSent || !!existing?.report_sent_at)
       return {
         plan_id: plan.id,
         employee_id: row.employee_id,
         department_id: row.department_id,
-        shift: allowEditTasks ? (row.shift || '8:00-18:00') : (locked?.shift || row.shift || '8:00-18:00'),
-        planned: allowEditTasks ? (row.planned ?? '') : (locked?.planned ?? row.planned ?? ''),
-        completed: row.completed ?? '',
-        notes: row.notes ?? '',
+        shift: frozen || !allowEditTasks
+          ? (existing?.shift || row.shift || '8:00-18:00')
+          : (row.shift || '8:00-18:00'),
+        planned: frozen || !allowEditTasks
+          ? (existing?.planned ?? row.planned ?? '')
+          : (row.planned ?? ''),
+        completed: frozen ? (existing?.completed ?? '') : (row.completed ?? ''),
+        notes: frozen ? (existing?.notes ?? '') : (row.notes ?? ''),
         notify_email: row.notify_email,
         notify_push: row.notify_push,
-        extra: allowEditTasks ? (row.extra ?? {}) : (locked?.extra ?? row.extra ?? {}),
+        extra: frozen
+          ? (existing?.extra ?? {})
+          : allowEditTasks
+            ? (row.extra ?? {})
+            : (existing?.extra ?? row.extra ?? {}),
+        ...(existing?.report_sent_at ? { report_sent_at: existing.report_sent_at } : {}),
       }
     })
     const { error } = await supabase.from('task_rows').upsert(payload, {
@@ -198,16 +253,30 @@ export async function updateTaskRowFields(
 
   const { data: row } = await supabase
     .from('task_rows')
-    .select('*, day_plans(team_id, plan_date)')
+    .select('*, day_plans(team_id, plan_date, digest_sent_at)')
     .eq('id', rowId)
     .single()
 
   if (!row) return { error: 'Рядок не знайдено' }
-  const teamId = row.day_plans?.team_id as string
-  const planDate = row.day_plans?.plan_date as string | undefined
+  const dayPlanRaw = row.day_plans as
+    | { team_id?: string; plan_date?: string; digest_sent_at?: string | null }
+    | { team_id?: string; plan_date?: string; digest_sent_at?: string | null }[]
+    | null
+  const dayPlan = Array.isArray(dayPlanRaw) ? dayPlanRaw[0] : dayPlanRaw
+  const teamId = dayPlan?.team_id as string
+  const planDate = dayPlan?.plan_date as string | undefined
   const isAdmin =
     profile.role === 'super_admin' ||
     (await canManageTeam(supabase, profile, teamId))
+
+  // Past day + digest or row report already sent → frozen
+  if (
+    planDate &&
+    planDate < todayISO() &&
+    (!!row.report_sent_at || !!dayPlan?.digest_sent_at)
+  ) {
+    return { error: 'Звіт за минулий день уже відправлено — редагування заборонено' }
+  }
 
   if (!isAdmin) {
     if (row.employee_id !== user.id) return { error: 'Немає доступу' }
@@ -215,10 +284,13 @@ export async function updateTaskRowFields(
     if (fields.completed !== undefined) allowed.completed = fields.completed
     if (fields.notes !== undefined) allowed.notes = fields.notes
     if (fields.extra !== undefined) allowed.extra = fields.extra
+    if (Object.keys(allowed).length === 0) return { success: true }
     const { error } = await supabase.from('task_rows').update(allowed).eq('id', rowId)
     if (error) return { error: error.message }
   } else {
-    const allowEditTasks = await allowEditingPlanTasks(supabase, profile, teamId)
+    const allowEditTasks = planDate
+      ? await allowEditingPlanTasks(supabase, profile, teamId, planDate)
+      : await canEditTeamTasks(supabase, profile, teamId)
     const patch: Record<string, unknown> = { ...fields }
     if (!allowEditTasks) {
       delete patch.planned
@@ -265,6 +337,9 @@ export async function syncPlanMembers(teamId: string, date: string) {
     .select('user_id, department_id')
     .eq('team_id', teamId)
 
+  const templates = await loadColumnTemplates(supabase, teamId)
+  const seeded = templatesForNewRow(templates)
+
   const payload = (members ?? [])
     .filter(m => !hidden.has(m.user_id))
     .map(m => ({
@@ -272,7 +347,10 @@ export async function syncPlanMembers(teamId: string, date: string) {
       employee_id: m.user_id,
       department_id: m.department_id,
       shift: defaultShift,
-      planned: '',
+      planned: seeded.planned,
+      completed: seeded.completed,
+      notes: seeded.notes,
+      extra: seeded.extra,
     }))
 
   if (payload.length) {
@@ -293,6 +371,9 @@ export async function addPlanMembers(teamId: string, date: string, userIds: stri
   const { supabase, profile } = ctx
   if (!(await canManageTeam(supabase, profile, teamId))) return { error: 'Немає доступу' }
   if (!userIds.length) return { error: 'Оберіть працівників' }
+  if (date < todayISO() && !isBoss(profile.role)) {
+    return { error: 'У минулі дні працівників може додавати лише шеф' }
+  }
 
   const ensured = await ensureDayPlan(teamId, date, ctx)
   if (ensured.error || !ensured.plan) return { error: ensured.error ?? 'Немає плану' }
@@ -317,6 +398,9 @@ export async function addPlanMembers(teamId: string, date: string, userIds: stri
     .eq('team_id', teamId)
     .in('user_id', userIds)
 
+  const templates = await loadColumnTemplates(supabase, teamId)
+  const seeded = templatesForNewRow(templates)
+
   const payload = (members ?? [])
     .filter(m => !hidden.has(m.user_id))
     .map(m => ({
@@ -324,7 +408,10 @@ export async function addPlanMembers(teamId: string, date: string, userIds: stri
       employee_id: m.user_id,
       department_id: m.department_id,
       shift: defaultShift,
-      planned: '',
+      planned: seeded.planned,
+      completed: seeded.completed,
+      notes: seeded.notes,
+      extra: seeded.extra,
     }))
 
   if (payload.length) {
@@ -366,15 +453,21 @@ export async function copyPlanFromPreviousDay(teamId: string, date: string) {
   const ensured = await ensureDayPlan(teamId, date, ctx)
   if (ensured.error || !ensured.plan) return { error: ensured.error ?? 'Немає плану' }
 
+  const templates = await loadColumnTemplates(supabase, teamId)
+  const seeded = templatesForNewRow(templates)
+
   const payload = prevRows.map(r => ({
     plan_id: ensured.plan!.id,
     employee_id: r.employee_id,
     department_id: r.department_id,
     shift: r.shift || '8:00-18:00',
-    planned: r.planned || '',
-    completed: '',
-    notes: '',
-    extra: (r.extra as Record<string, string>) || {},
+    planned: r.planned || seeded.planned,
+    completed: seeded.completed,
+    notes: seeded.notes,
+    extra: {
+      ...seeded.extra,
+      ...((r.extra as Record<string, string>) || {}),
+    },
   }))
 
   const { error } = await supabase.from('task_rows').upsert(payload, {
@@ -399,12 +492,32 @@ export async function removePlanMember(teamId: string, date: string, employeeId:
 
   const { data: plan } = await supabase
     .from('day_plans')
-    .select('id')
+    .select('id, plan_date, digest_sent_at, plan_tasks_locked')
     .eq('team_id', teamId)
     .eq('plan_date', date)
     .maybeSingle()
 
   if (!plan) return { error: 'План не знайдено' }
+
+  if (plan.plan_tasks_locked === true) {
+    return { error: 'План заблоковано — спочатку розблокуйте день' }
+  }
+
+  const isPast = plan.plan_date < todayISO()
+  if (isPast && plan.digest_sent_at) {
+    return { error: 'Минулий день із надісланим звітом — видалення недоступне' }
+  }
+
+  const { data: existing } = await supabase
+    .from('task_rows')
+    .select('report_sent_at')
+    .eq('plan_id', plan.id)
+    .eq('employee_id', employeeId)
+    .maybeSingle()
+
+  if (isPast && existing?.report_sent_at) {
+    return { error: 'Минулий день із надісланим звітом — видалення недоступне' }
+  }
 
   const { error } = await supabase
     .from('task_rows')
@@ -443,9 +556,10 @@ export async function deleteDayPlan(teamId: string, date: string) {
   return { success: true }
 }
 
-/** Shared lock for planned/shift/extra — same for all deputies and devices. */
-export async function setTeamPlanTasksLocked(teamId: string, locked: boolean) {
-  const { supabase, profile } = await requireAdmin()
+/** Lock planned/shift/extra for a specific plan day (default unlocked). */
+export async function setDayPlanTasksLocked(teamId: string, date: string, locked: boolean) {
+  const ctx = await requireAdmin()
+  const { supabase, profile } = ctx
   if (!(await canManageTeam(supabase, profile, teamId))) {
     return { error: 'Немає доступу' }
   }
@@ -453,13 +567,21 @@ export async function setTeamPlanTasksLocked(teamId: string, locked: boolean) {
     return { error: 'Редагування завдань вимкнено в налаштуваннях' }
   }
 
+  const planRes = await ensureDayPlan(teamId, date, ctx)
+  if (planRes.error || !planRes.plan) return { error: planRes.error ?? 'Немає плану' }
+
   const { error } = await supabase
-    .from('teams')
+    .from('day_plans')
     .update({ plan_tasks_locked: locked })
-    .eq('id', teamId)
+    .eq('id', planRes.plan.id)
 
   if (error) return { error: error.message }
-  revalidatePath(`/teams/${teamId}`, 'layout')
+  revalidatePath(`/teams/${teamId}/plans/${date}`)
   revalidatePath('/admin')
-  return { success: true }
+  return { success: true, planId: planRes.plan.id }
+}
+
+/** @deprecated use setDayPlanTasksLocked */
+export async function setTeamPlanTasksLocked(teamId: string, locked: boolean) {
+  return setDayPlanTasksLocked(teamId, todayISO(), locked)
 }

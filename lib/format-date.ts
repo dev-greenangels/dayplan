@@ -104,3 +104,11 @@ export function formatUkShortDate(iso: string): string {
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(dt.getDate())}.${pad(dt.getMonth() + 1)}.${dt.getFullYear()}`
 }
+
+/** dd.mm without year */
+export function formatUkDayMonth(iso: string): string {
+  const dt = new Date(iso.includes('T') ? iso : iso + 'T12:00:00')
+  if (Number.isNaN(dt.getTime())) return iso
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(dt.getDate())}.${pad(dt.getMonth() + 1)}`
+}

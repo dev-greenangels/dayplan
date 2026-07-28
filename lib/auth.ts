@@ -7,6 +7,15 @@ import { isBoss, isDeputyOrBoss } from '@/lib/roles'
 
 import { avatarFromMetadata } from '@/lib/avatar'
 
+function sameInstant(a: string | null | undefined, b: string | null | undefined) {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  const ta = Date.parse(a)
+  const tb = Date.parse(b)
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return a === b
+  return ta === tb
+}
+
 export type SessionContext = {
   supabase: Awaited<ReturnType<typeof createClient>>
   user: User
@@ -17,7 +26,8 @@ export { isBoss, isDeputyOrBoss } from '@/lib/roles'
 
 /** Core columns that always exist — never block auth on optional migration cols. */
 const PROFILE_CORE = 'id, full_name, email, role, department, created_at'
-const PROFILE_WITH_NOTIFY = `${PROFILE_CORE}, notify_email, notify_push, avatar_url`
+const PROFILE_WITH_SIGNIN = `${PROFILE_CORE}, avatar_url, last_sign_in_at, invite_blocked`
+const PROFILE_WITH_NOTIFY = `${PROFILE_WITH_SIGNIN}, notify_email, notify_push, notify_worker_send_push`
 
 /**
  * Request-scoped session + profile. Dedupes getUser + profiles within one RSC tree.
@@ -32,6 +42,8 @@ export const getSessionProfile = cache(async (): Promise<SessionContext | null> 
 
   let profile: Profile | null = null
   let error: { message: string } | null = null
+  /** False when fallback select omitted sign-in columns — do not stamp (avoids refresh loops). */
+  let canCompareSignIn = false
 
   {
     const res = await supabase
@@ -41,14 +53,26 @@ export const getSessionProfile = cache(async (): Promise<SessionContext | null> 
       .maybeSingle<Profile>()
     if (!res.error) {
       profile = res.data
+      canCompareSignIn = true
     } else {
-      const fallback = await supabase
+      const mid = await supabase
         .from('profiles')
-        .select(PROFILE_CORE)
+        .select(PROFILE_WITH_SIGNIN)
         .eq('id', user.id)
         .maybeSingle<Profile>()
-      profile = fallback.data
-      error = fallback.error
+      if (!mid.error) {
+        profile = mid.data
+        canCompareSignIn = true
+        error = null
+      } else {
+        const fallback = await supabase
+          .from('profiles')
+          .select(PROFILE_CORE)
+          .eq('id', user.id)
+          .maybeSingle<Profile>()
+        profile = fallback.data
+        error = fallback.error
+      }
     }
   }
 
@@ -68,13 +92,24 @@ export const getSessionProfile = cache(async (): Promise<SessionContext | null> 
       .maybeSingle<Profile>()
     if (!refetch.error) {
       profile = refetch.data
+      canCompareSignIn = true
     } else {
-      const fallback = await supabase
+      const mid = await supabase
         .from('profiles')
-        .select(PROFILE_CORE)
+        .select(PROFILE_WITH_SIGNIN)
         .eq('id', user.id)
         .maybeSingle<Profile>()
-      profile = fallback.data
+      if (!mid.error) {
+        profile = mid.data
+        canCompareSignIn = true
+      } else {
+        const fallback = await supabase
+          .from('profiles')
+          .select(PROFILE_CORE)
+          .eq('id', user.id)
+          .maybeSingle<Profile>()
+        profile = fallback.data
+      }
     }
   }
 
@@ -84,28 +119,47 @@ export const getSessionProfile = cache(async (): Promise<SessionContext | null> 
     ...profile,
     notify_email: profile.notify_email !== false,
     notify_push: profile.notify_push !== false,
+    notify_worker_send_push: profile.notify_worker_send_push !== false,
   }
 
   const metaAvatar = avatarFromMetadata(user.user_metadata as Record<string, unknown>)
-  if (metaAvatar && metaAvatar !== profile.avatar_url) {
+  if (canCompareSignIn && metaAvatar && metaAvatar !== profile.avatar_url) {
     profile = { ...profile, avatar_url: metaAvatar }
     void stampProfileAvatar(user.id, metaAvatar)
   }
 
-  // Stamp sign-in on profiles (service role — RLS blocks employees from self-update)
-  if (user.last_sign_in_at) {
+  // Stamp sign-in only when DB value differs (unconditional UPDATE retriggers
+  // Realtime on every RSC render → infinite refresh on /admin/people).
+  if (
+    canCompareSignIn &&
+    user.last_sign_in_at &&
+    (!sameInstant(user.last_sign_in_at, profile.last_sign_in_at) ||
+      profile.invite_blocked === false)
+  ) {
     profile = {
       ...profile,
       last_sign_in_at: user.last_sign_in_at,
       invite_blocked: true,
     }
     void stampProfileSignIn(user.id, user.last_sign_in_at)
+  } else if (user.last_sign_in_at) {
+    profile = {
+      ...profile,
+      last_sign_in_at: user.last_sign_in_at,
+      invite_blocked: true,
+    }
   }
 
   return { supabase, user, profile }
 })
 
+/** In-process guards so RSC remounts never re-stamp the same values (Realtime-safe). */
+const stampedSignInAt = new Map<string, string>()
+const stampedAvatarUrl = new Map<string, string>()
+
 async function stampProfileAvatar(userId: string, avatarUrl: string) {
+  if (stampedAvatarUrl.get(userId) === avatarUrl) return
+  stampedAvatarUrl.set(userId, avatarUrl)
   try {
     const { createAdminClient } = await import('@/lib/supabase/admin')
     const admin = createAdminClient()
@@ -117,6 +171,8 @@ async function stampProfileAvatar(userId: string, avatarUrl: string) {
 
 /** Persist last_sign_in_at + invite_blocked; prefer admin client so RLS never blocks. */
 async function stampProfileSignIn(userId: string, lastSignInAt: string) {
+  if (stampedSignInAt.get(userId) === lastSignInAt) return
+  stampedSignInAt.set(userId, lastSignInAt)
   const payload = { last_sign_in_at: lastSignInAt, invite_blocked: true }
   try {
     const { createAdminClient } = await import('@/lib/supabase/admin')
@@ -184,6 +240,30 @@ export async function getManagedTeamIds(
     .eq('user_id', profile.id)
 
   return (data ?? []).map(r => r.team_id)
+}
+
+/** Whether deputy may open /admin/people (boss always). */
+export async function canAccessPeoplePage(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  profile: Profile
+): Promise<boolean> {
+  if (isBoss(profile.role)) return true
+  if (profile.role !== 'sub_admin') return false
+  const { data } = await supabase
+    .from('team_admins')
+    .select('team_id')
+    .eq('user_id', profile.id)
+    .eq('can_access_people', true)
+    .limit(1)
+  return (data ?? []).length > 0
+}
+
+export async function requirePeopleAccess(): Promise<SessionContext> {
+  const ctx = await requireAdmin()
+  if (!(await canAccessPeoplePage(ctx.supabase, ctx.profile))) {
+    redirect('/admin')
+  }
+  return ctx
 }
 
 export async function canManageTeam(

@@ -32,7 +32,7 @@ export default async function AdminHomePage() {
     teamIds.length
       ? supabase
           .from('team_admins')
-          .select('team_id, user_id, hide_from_plan, can_edit_tasks')
+          .select('team_id, user_id, hide_from_plan, can_edit_tasks, can_access_people, notify_email, notify_push')
           .in('team_id', teamIds)
       : Promise.resolve({ data: [] }),
     supabase
@@ -47,6 +47,13 @@ export default async function AdminHomePage() {
     countByTeam.set(m.team_id, (countByTeam.get(m.team_id) ?? 0) + 1)
   }
 
+  const memberDeptsRes = teamIds.length
+    ? await supabase
+        .from('team_members')
+        .select('team_id, user_id, department_id')
+        .in('team_id', teamIds)
+    : { data: [] as { team_id: string; user_id: string; department_id: string | null }[] }
+
   const teamsWithCount = (teams ?? []).map(t => ({
     ...t,
     memberCount: countByTeam.get(t.id) ?? 0,
@@ -60,6 +67,7 @@ export default async function AdminHomePage() {
         departments={departmentsRes.data ?? []}
         columns={columnsRes.data ?? []}
         teamAdmins={teamAdminsRes.data ?? []}
+        memberDepartments={memberDeptsRes.data ?? []}
         deputies={(deputiesRes.data ?? []) as never[]}
         isSuperAdmin={isBoss(profile.role)}
       />

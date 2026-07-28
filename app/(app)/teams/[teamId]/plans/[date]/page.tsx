@@ -2,6 +2,7 @@ import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
 import { requireUser, getTeamAccess } from '@/lib/auth'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { listPlanPhotos } from '@/app/actions/photos'
 import { todayISO } from '@/lib/format-date'
 import TeamPlanBoard from './team-plan-board'
 import type { Department, Profile, TaskRow, Team, TeamColumn } from '@/lib/types'
@@ -17,7 +18,7 @@ function asProfile(raw: unknown): Profile | null {
 }
 
 const PROFILE_JOIN =
-  'id, full_name, email, role, department, created_at, last_sign_in_at, avatar_url'
+  'id, full_name, email, role, department, created_at, last_sign_in_at, avatar_url, notify_email, notify_push'
 
 export default async function TeamPlanPage({ params }: Props) {
   const { teamId, date } = await params
@@ -75,17 +76,11 @@ export default async function TeamPlanPage({ params }: Props) {
   }
 
   const leadersPromise = isAdmin
-    ? Promise.all([
-        supabase.from('profiles').select('id, full_name, email, role, avatar_url').eq('role', 'super_admin'),
-        supabase
-          .from('team_admins')
-          .select('user_id, profile:profiles(id, full_name, email, role, avatar_url)')
-          .eq('team_id', teamId),
-      ])
-    : Promise.resolve([
-        { data: null as { id: string; full_name: string; email: string; role: string; avatar_url?: string | null }[] | null },
-        { data: null as { user_id: string; profile: unknown }[] | null },
-      ] as const)
+    ? supabase
+        .from('team_admins')
+        .select('user_id, profile:profiles(id, full_name, email, role, avatar_url)')
+        .eq('team_id', teamId)
+    : Promise.resolve({ data: null as { user_id: string; profile: unknown }[] | null })
 
   const [
     planRes,
@@ -98,7 +93,7 @@ export default async function TeamPlanPage({ params }: Props) {
   ] = await Promise.all([
     supabase
       .from('day_plans')
-      .select('id, team_id, plan_date, created_by, created_at, digest_sent_at, digest_receipts')
+      .select('id, team_id, plan_date, created_by, created_at, digest_sent_at, digest_receipts, plan_tasks_locked')
       .eq('team_id', teamId)
       .eq('plan_date', date)
       .maybeSingle(),
@@ -116,7 +111,7 @@ export default async function TeamPlanPage({ params }: Props) {
       .order('sort_order'),
     supabase
       .from('team_columns')
-      .select('id, team_id, key, label, sort_order, is_system, hidden, created_at')
+      .select('id, team_id, key, label, sort_order, is_system, hidden, input_template, created_at')
       .eq('team_id', teamId)
       .order('sort_order'),
     supabase
@@ -226,6 +221,9 @@ export default async function TeamPlanPage({ params }: Props) {
       department: raw?.department ?? '',
       created_at: raw?.created_at ?? '',
       last_sign_in_at: raw?.last_sign_in_at ?? null,
+      avatar_url: raw?.avatar_url ?? null,
+      notify_email: raw?.notify_email !== false,
+      notify_push: raw?.notify_push !== false,
     }
   }
 
@@ -242,20 +240,8 @@ export default async function TeamPlanPage({ params }: Props) {
 
   let leaders: { id: string; full_name: string; email: string; role: string; avatar_url?: string | null }[] = []
   if (isAdmin) {
-    const [supersRes, deputyRes] = leadersBundle as [
-      { data: { id: string; full_name: string; email: string; role: string; avatar_url?: string | null }[] | null },
-      { data: { user_id: string; profile: unknown }[] | null },
-    ]
+    const deputyRes = leadersBundle as { data: { user_id: string; profile: unknown }[] | null }
     const map = new Map<string, { id: string; full_name: string; email: string; role: string; avatar_url?: string | null }>()
-    for (const s of supersRes.data ?? []) {
-      map.set(s.id, {
-        id: s.id,
-        full_name: s.full_name || s.email,
-        email: s.email || '',
-        role: s.role,
-        avatar_url: s.avatar_url ?? null,
-      })
-    }
     for (const d of deputyRes.data ?? []) {
       const p = asProfile(d.profile)
       if (!p) continue
@@ -288,6 +274,8 @@ export default async function TeamPlanPage({ params }: Props) {
     pushActiveIds = [...new Set((subs ?? []).map(s => s.user_id))]
   }
 
+  const initialPhotos = plan ? (await listPlanPhotos(plan.id)).photos : []
+
   return (
     <div className="plan-page min-w-0 max-w-full">
       {isAdmin && (
@@ -301,6 +289,7 @@ export default async function TeamPlanPage({ params }: Props) {
         team={team}
         date={date}
         planId={plan?.id ?? null}
+        planTasksLocked={plan?.plan_tasks_locked === true}
         digestSentAt={plan?.digest_sent_at ?? null}
         digestReceipts={(plan?.digest_receipts as Record<string, { email?: string; push?: string }> | null) ?? {}}
         planDates={planDates}
@@ -312,12 +301,14 @@ export default async function TeamPlanPage({ params }: Props) {
         leaders={leaders}
         isAdmin={isAdmin}
         isSubAdmin={profile.role === 'sub_admin'}
+        isSuperAdmin={profile.role === 'super_admin'}
         canEditTasks={canEditTasks}
         currentUserId={user.id}
         loggedInIds={loggedInIds}
         hiddenFromPlanIds={hiddenFromPlanIds}
         pushActiveIds={pushActiveIds}
         memberPlanDates={memberPlanDates}
+        initialPhotos={initialPhotos}
       />
     </div>
   )

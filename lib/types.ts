@@ -16,8 +16,25 @@ export interface Profile {
   notify_email?: boolean
   /** Prefer receiving plan/report web push (default true) */
   notify_push?: boolean
+  /** Leaders: push when tasks are sent to employees (default true) */
+  notify_worker_send_push?: boolean
   /** Cached Google/OAuth avatar URL */
   avatar_url?: string | null
+}
+
+export type TaskPhotoField = 'planned' | 'completed'
+
+export interface TaskRowPhoto {
+  id: string
+  task_row_id: string
+  field: TaskPhotoField
+  storage_path: string
+  thumb_path: string
+  created_by: string | null
+  sort_order: number
+  created_at: string
+  /** Short-lived signed URL for thumb (filled when listing) */
+  thumb_url?: string | null
 }
 
 export interface Team {
@@ -57,7 +74,22 @@ export interface TeamColumn {
   sort_order: number
   is_system: boolean
   hidden: boolean
+  /** Placeholder text prefilled into empty cells; not counted as filled for reports */
+  input_template?: string | null
   created_at: string
+}
+
+export interface TeamAdmin {
+  team_id: string
+  user_id: string
+  hide_from_plan?: boolean
+  can_edit_tasks?: boolean
+  /** Deputy may open /admin/people (super_admin always can) */
+  can_access_people?: boolean
+  /** Receive leadership digest/report email for this team (default true) */
+  notify_email?: boolean
+  /** Receive leadership digest/report push for this team (default true) */
+  notify_push?: boolean
 }
 
 export interface DayPlan {
@@ -68,6 +100,8 @@ export interface DayPlan {
   created_by: string | null
   created_at: string
   digest_sent_at?: string | null
+  /** Per-day lock for planned/shift/extra (default unlocked) */
+  plan_tasks_locked?: boolean
   /** Per-leader channel stamps: { [userId]: { email?: iso, push?: iso } } */
   digest_receipts?: Record<string, { email?: string; push?: string }>
   team?: Team

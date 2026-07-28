@@ -3,12 +3,13 @@ import { getApiSession, isBoss } from '@/lib/auth'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { isMailConfigured, sendAppMail } from '@/lib/mail'
 import { isPushConfigured, sendPushToUserIds } from '@/lib/push'
-import { getNotifyPrefsByUserIds } from '@/lib/notify-prefs'
-import { formatUkDate } from '@/lib/format-date'
+import { formatUkDate, todayISO } from '@/lib/format-date'
 import {
   buildDeptGroupedPlanTableHtml,
   mapTaskRowsForEmail,
 } from '@/lib/email-plan-html'
+import { isFilledBeyondTemplate } from '@/lib/column-templates'
+import { effectiveLeaderNotifyPrefs } from '@/lib/notify-prefs'
 
 /** Employee → leadership: only the current user's completed report (email + push). */
 export async function POST(req: NextRequest) {
@@ -49,12 +50,37 @@ export async function POST(req: NextRequest) {
 
     const { data: plan } = await supabase
       .from('day_plans')
-      .select('id')
+      .select('id, digest_sent_at')
       .eq('team_id', teamId)
       .eq('plan_date', date)
       .maybeSingle()
 
     if (!plan) return NextResponse.json({ error: 'План ще не створено' }, { status: 404 })
+
+    const { data: completedCol } = await supabase
+      .from('team_columns')
+      .select('input_template')
+      .eq('team_id', teamId)
+      .eq('key', 'completed')
+      .maybeSingle()
+    const completedTemplate = completedCol?.input_template
+
+    // Shared PC: all workers must fill «Виконано» before anyone can send
+    if (team.work_mode === 'shared') {
+      const { data: allRows } = await supabase
+        .from('task_rows')
+        .select('id, completed')
+        .eq('plan_id', plan.id)
+      const incomplete = (allRows ?? []).filter(
+        r => !isFilledBeyondTemplate(r.completed, completedTemplate)
+      )
+      if (incomplete.length > 0) {
+        return NextResponse.json(
+          { error: 'Заповніть «Виконано» для всіх у плані перед відправкою' },
+          { status: 400 }
+        )
+      }
+    }
 
     const { data: rows } = await supabase
       .from('task_rows')
@@ -63,38 +89,56 @@ export async function POST(req: NextRequest) {
       .eq('employee_id', user.id)
       .order('created_at')
 
-    const withCompleted = (rows ?? []).filter(r => (r.completed || '').trim())
+    const myRows = rows ?? []
+    if (date < todayISO() && (myRows.some(r => r.report_sent_at) || !!plan.digest_sent_at)) {
+      return NextResponse.json(
+        { error: 'Звіт за минулий день уже відправлено' },
+        { status: 400 }
+      )
+    }
+
+    const withCompleted = myRows.filter(r =>
+      isFilledBeyondTemplate(r.completed, completedTemplate)
+    )
     if (withCompleted.length === 0) {
       return NextResponse.json({ error: 'Заповніть своє поле «Виконано» перед відправкою' }, { status: 400 })
     }
 
     // Service role: employees cannot read other profiles' emails via RLS
     const admin = createAdminClient()
-    const [{ data: teamAdmins }, { data: superAdmins }] = await Promise.all([
-      admin.from('team_admins').select('user_id, profile:profiles(id, email)').eq('team_id', teamId),
-      admin.from('profiles').select('id, email').eq('role', 'super_admin'),
-    ])
+    const { data: teamAdmins } = await admin
+      .from('team_admins')
+      .select(
+        'user_id, notify_email, notify_push, profile:profiles(id, email, notify_email, notify_push)'
+      )
+      .eq('team_id', teamId)
 
-    const leaders = [
-      ...(superAdmins ?? []).map(a => ({ id: a.id, email: a.email })),
-      ...(teamAdmins ?? []).map(a => {
-        const p = a.profile as { id?: string; email?: string } | { id?: string; email?: string }[] | null
-        const prof = Array.isArray(p) ? p[0] : p
-        return { id: prof?.id || a.user_id, email: prof?.email }
-      }),
-    ]
-    const leaderIds = [...new Set(leaders.map(l => l.id).filter(Boolean))] as string[]
-    const prefs = await getNotifyPrefsByUserIds(
-      admin as Parameters<typeof getNotifyPrefsByUserIds>[0],
-      leaderIds
-    )
+    const leaders = (teamAdmins ?? []).map(a => {
+      const p = a.profile as
+        | { id?: string; email?: string; notify_email?: boolean; notify_push?: boolean }
+        | { id?: string; email?: string; notify_email?: boolean; notify_push?: boolean }[]
+        | null
+      const prof = Array.isArray(p) ? p[0] : p
+      const prefs = effectiveLeaderNotifyPrefs(a, {
+        email: prof?.notify_email !== false,
+        push: prof?.notify_push !== false,
+      })
+      return {
+        id: prof?.id || a.user_id,
+        email: prof?.email,
+        notify_email: prefs.email,
+        notify_push: prefs.push,
+      }
+    })
     const emails = [...new Set(
       leaders
-        .filter(l => l.email && prefs.get(l.id)?.email !== false)
+        .filter(l => l.email && l.notify_email)
         .map(l => l.email)
         .filter(Boolean)
     )] as string[]
-    const pushLeaderIds = leaderIds.filter(id => prefs.get(id)?.push !== false)
+    const pushLeaderIds = [...new Set(
+      leaders.filter(l => l.id && l.notify_push).map(l => l.id)
+    )] as string[]
 
     const dateStr = formatUkDate(date, { weekday: false })
     const fromName = profile.full_name || user.email
@@ -107,7 +151,10 @@ export async function POST(req: NextRequest) {
 
     if (emails.length === 0 && pushLeaderIds.length === 0) {
       return NextResponse.json(
-        { error: 'Немає керівництва з увімкненими сповіщеннями (або без email)' },
+        {
+          error:
+            'У керівництва вимкнено email і push (картка користувача або налаштування команди), або немає email',
+        },
         { status: 400 }
       )
     }
@@ -175,14 +222,32 @@ export async function POST(req: NextRequest) {
     }
 
     const sentAt = new Date().toISOString()
-    const rowIds = withCompleted.map(r => r.id).filter(Boolean)
-    if (rowIds.length > 0) {
+    if (team.work_mode === 'shared') {
       const { error: stampErr } = await admin
         .from('task_rows')
         .update({ report_sent_at: sentAt })
-        .in('id', rowIds)
+        .eq('plan_id', plan.id)
       if (stampErr) {
         console.warn('[send-employee-leadership-report] report_sent_at update failed', stampErr.message)
+        return NextResponse.json(
+          { error: 'Звіт надіслано, але не вдалося зафіксувати відправку: ' + stampErr.message },
+          { status: 500 }
+        )
+      }
+    } else {
+      const rowIds = withCompleted.map(r => r.id).filter(Boolean)
+      if (rowIds.length > 0) {
+        const { error: stampErr } = await admin
+          .from('task_rows')
+          .update({ report_sent_at: sentAt })
+          .in('id', rowIds)
+        if (stampErr) {
+          console.warn('[send-employee-leadership-report] report_sent_at update failed', stampErr.message)
+          return NextResponse.json(
+            { error: 'Звіт надіслано, але не вдалося зафіксувати відправку: ' + stampErr.message },
+            { status: 500 }
+          )
+        }
       }
     }
 

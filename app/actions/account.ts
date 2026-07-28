@@ -8,6 +8,7 @@ export async function updateMyAccountSettings(opts: {
   full_name?: string
   notify_email?: boolean
   notify_push?: boolean
+  notify_worker_send_push?: boolean
 }) {
   const ctx = await getSessionProfile()
   if (!ctx) return { error: 'Unauthorized' }
@@ -16,6 +17,7 @@ export async function updateMyAccountSettings(opts: {
     full_name?: string
     notify_email?: boolean
     notify_push?: boolean
+    notify_worker_send_push?: boolean
   } = {}
 
   if (typeof opts.full_name === 'string') {
@@ -25,6 +27,9 @@ export async function updateMyAccountSettings(opts: {
   }
   if (typeof opts.notify_email === 'boolean') payload.notify_email = opts.notify_email
   if (typeof opts.notify_push === 'boolean') payload.notify_push = opts.notify_push
+  if (typeof opts.notify_worker_send_push === 'boolean') {
+    payload.notify_worker_send_push = opts.notify_worker_send_push
+  }
 
   if (Object.keys(payload).length === 0) return { error: 'Немає змін' }
 

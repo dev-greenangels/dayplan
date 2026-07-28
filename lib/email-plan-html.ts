@@ -95,7 +95,7 @@ function columnsForMode(
   }
   return [
     { key: 'shift', label: 'Зміна', is_system: true },
-    { key: 'planned', label: 'Заплановано', is_system: true },
+    { key: 'planned', label: 'Завдання', is_system: true },
     { key: 'completed', label: 'Виконано', is_system: true },
     { key: 'notes', label: 'Обробки', is_system: true },
     ...extras,
@@ -110,13 +110,13 @@ function cellValue(row: EmailPlanRow, col: EmailPlanColumn): string {
   return cellOrDash(row.extra?.[col.key])
 }
 
-function thStyle(mode: DigestContentMode, col: EmailPlanColumn) {
-  if (mode === 'employee_report' && COL_TH[col.key]) return COL_TH[col.key]
+function thStyle(_mode: DigestContentMode, col: EmailPlanColumn) {
+  if (COL_TH[col.key]) return COL_TH[col.key]
   return TH
 }
 
-function tdStyle(mode: DigestContentMode, col: EmailPlanColumn) {
-  if (mode === 'employee_report' && COL_TD[col.key]) return COL_TD[col.key]
+function tdStyle(_mode: DigestContentMode, col: EmailPlanColumn) {
+  if (COL_TD[col.key]) return COL_TD[col.key]
   return TD_PRE
 }
 

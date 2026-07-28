@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getApiSession, assertAdminApi, canManageTeam } from '@/lib/auth'
 import { isMailConfigured, sendAppMail } from '@/lib/mail'
-import { getTeamLeaderUserIds, isPushConfigured, sendPushPerUser, sendPushToUserIds } from '@/lib/push'
+import { getTeamLeadersForNotify, isPushConfigured, sendPushPerUser, sendPushToUserIds } from '@/lib/push'
 import { getNotifyPrefsByUserIds } from '@/lib/notify-prefs'
 import { formatUkDate } from '@/lib/format-date'
 import { escapeHtml, formatPlanDateDots } from '@/lib/email-plan-html'
@@ -132,12 +132,20 @@ export async function POST(req: NextRequest) {
 
     if (sent > 0) {
       const titleDate = formatUkDate(date, { weekday: false })
-      const leaderIds = await getTeamLeaderUserIds(supabase, teamId)
-      const leaderPrefs = await getNotifyPrefsByUserIds(supabase, leaderIds)
-      const pushLeaders = leaderIds.filter(id => leaderPrefs.get(id)?.push !== false)
+      const leaders = await getTeamLeadersForNotify(supabase, teamId)
+      const leaderPrefs = await getNotifyPrefsByUserIds(
+        supabase,
+        leaders.map(l => l.user_id)
+      )
+      const pushLeaders = leaders
+        .filter(l => {
+          const prefs = leaderPrefs.get(l.user_id)
+          return prefs?.push !== false && prefs?.workerSendPush !== false
+        })
+        .map(l => l.user_id)
       await sendPushToUserIds(supabase, pushLeaders, {
         title: `Завдання на ${titleDate}`,
-        body: `Завдання команди «${team?.name ?? ''}» відправлено працівникам`,
+        body: `Команда «${team?.name ?? ''}» отримала завдання на ${titleDate}`,
       })
     }
 

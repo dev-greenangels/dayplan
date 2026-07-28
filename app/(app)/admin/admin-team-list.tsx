@@ -7,6 +7,7 @@ import { deleteTeam } from '@/app/actions/org'
 import ConfirmDialog from '@/components/confirm-dialog'
 import Modal from '@/components/modal'
 import TeamSettingsPanel from '@/components/team-settings-panel'
+import { useOrgRealtimeRefresh } from '@/hooks/use-org-realtime-refresh'
 
 interface TeamWithCount extends Team {
   memberCount: number
@@ -24,7 +25,16 @@ interface Props {
   today: string
   departments: Department[]
   columns: TeamColumn[]
-  teamAdmins: { team_id: string; user_id: string; hide_from_plan?: boolean; can_edit_tasks?: boolean }[]
+  teamAdmins: {
+    team_id: string
+    user_id: string
+    hide_from_plan?: boolean
+    can_edit_tasks?: boolean
+    can_access_people?: boolean
+    notify_email?: boolean
+    notify_push?: boolean
+  }[]
+  memberDepartments: { team_id: string; user_id: string; department_id: string | null }[]
   deputies: Deputy[]
   isSuperAdmin: boolean
 }
@@ -35,6 +45,7 @@ export default function AdminTeamList({
   departments,
   columns,
   teamAdmins,
+  memberDepartments,
   deputies,
   isSuperAdmin,
 }: Props) {
@@ -43,6 +54,13 @@ export default function AdminTeamList({
   const [error, setError] = useState<string | null>(null)
   const [toDelete, setToDelete] = useState<TeamWithCount | null>(null)
   const [settingsTeam, setSettingsTeam] = useState<Team | null | 'new'>(null)
+
+  // One org channel (shared topic) — soft refresh on team/member/profile changes
+  useOrgRealtimeRefresh(true)
+
+  function closeSettings() {
+    setSettingsTeam(null)
+  }
 
   function confirmDelete() {
     if (!toDelete) return
@@ -104,9 +122,9 @@ export default function AdminTeamList({
                   router.push(`/teams/${team.id}/plans/${today}`)
                 }
               }}
-              className="glass-card tap-btn group cursor-pointer overflow-hidden p-5 transition-shadow hover:shadow-md active:scale-[0.98]"
+              className="tap-card glass-card group relative cursor-pointer overflow-hidden p-5 text-left outline-none transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start justify-between gap-3 pr-10">
                 <div className="min-w-0">
                   <p className="text-lg font-semibold text-foreground group-hover:text-primary">{team.name}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -115,34 +133,52 @@ export default function AdminTeamList({
                     {team.memberCount} {pluralWorkers(team.memberCount)}
                   </p>
                 </div>
+              </div>
+              <div className="mt-3">
+                <span className="text-sm font-medium text-primary">Відкрити план →</span>
+              </div>
+
+              <div className="pointer-events-none absolute right-3 top-3 flex flex-col items-end gap-1">
                 {isSuperAdmin && (
                   <button
                     type="button"
                     disabled={isPending}
-                    onClick={e => { e.preventDefault(); e.stopPropagation(); setToDelete(team) }}
+                    onClick={e => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setToDelete(team)
+                    }}
+                    onPointerDown={e => e.stopPropagation()}
                     title="Видалити команду"
-                    className="tap-btn shrink-0 rounded-lg bg-red-50 p-2 text-red-500 hover:bg-red-100 disabled:opacity-50"
+                    className="pointer-events-auto tap-btn relative z-10 flex h-11 w-11 items-center justify-center rounded-lg text-red-500 hover:bg-red-50 disabled:opacity-50"
                   >
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-50">
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </span>
                   </button>
                 )}
               </div>
-              <div className="mt-3 flex items-center justify-between gap-2">
-                <span className="text-sm font-medium text-primary">Відкрити план →</span>
-                <button
-                  type="button"
-                  onClick={e => { e.preventDefault(); e.stopPropagation(); setSettingsTeam(team) }}
-                  title="Налаштування команди"
-                  className="tap-btn -mr-1 rounded-lg bg-muted/70 p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-                >
+
+              <button
+                type="button"
+                onClick={e => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setSettingsTeam(team)
+                }}
+                onPointerDown={e => e.stopPropagation()}
+                title="Налаштування команди"
+                className="tap-btn absolute bottom-2 right-2 z-10 flex h-12 w-12 items-center justify-center rounded-xl text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+              >
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted/70">
                   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                   </svg>
-                </button>
-              </div>
+                </span>
+              </button>
             </div>
           ))}
         </div>
@@ -186,13 +222,10 @@ export default function AdminTeamList({
         description={
           settingsTeam === 'new'
             ? 'Створіть команду, потім налаштуйте відділи та колонки'
-            : 'Відділи, колонки плану, режим і заступники'
+            : 'Відділи, колонки плану, режим і керівництво'
         }
         wide
-        onClose={() => {
-          setSettingsTeam(null)
-          router.refresh()
-        }}
+        onClose={closeSettings}
       >
         {settingsTeam !== null && (
           <TeamSettingsPanel
@@ -201,12 +234,10 @@ export default function AdminTeamList({
             departments={departments}
             columns={columns}
             teamAdmins={teamAdmins}
+            memberDepartments={memberDepartments}
             deputies={deputies}
             isSuperAdmin={isSuperAdmin}
-            onDone={() => {
-              setSettingsTeam(null)
-              router.refresh()
-            }}
+            onDone={closeSettings}
           />
         )}
       </Modal>

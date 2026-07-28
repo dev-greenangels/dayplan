@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getApiSession, assertAdminApi, canManageTeam } from '@/lib/auth'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { isMailConfigured, sendAppMail } from '@/lib/mail'
 import { isPushConfigured, sendPushToUserIds } from '@/lib/push'
 import { formatUkDate } from '@/lib/format-date'
 import {
   buildDeptGroupedPlanTableHtml,
+  escapeHtml,
   mapTaskRowsForEmail,
   type DigestContentMode,
 } from '@/lib/email-plan-html'
+import { isFilledBeyondTemplate } from '@/lib/column-templates'
+import { effectiveLeaderNotifyPrefs } from '@/lib/notify-prefs'
 
 type DigestContent = DigestContentMode
 type Receipts = Record<string, { email?: string; push?: string }>
@@ -23,13 +27,11 @@ export async function POST(req: NextRequest) {
     const {
       teamId,
       date,
-      recipientIds,
       channels = 'all',
       content = 'full',
     } = await req.json() as {
       teamId: string
       date: string
-      recipientIds?: string[]
       channels?: 'email' | 'push' | 'all'
       content?: DigestContent
     }
@@ -37,6 +39,7 @@ export async function POST(req: NextRequest) {
 
     const sendEmail = channels === 'email' || channels === 'all'
     const sendPush = channels === 'push' || channels === 'all'
+    // Always send the full table unless an older client still asks otherwise
     const contentMode: DigestContent =
       content === 'planned' || content === 'completed' ? content : 'full'
 
@@ -60,49 +63,60 @@ export async function POST(req: NextRequest) {
       .eq('plan_id', plan.id)
       .order('created_at')
 
+    if (team?.work_mode === 'shared') {
+      const { data: completedCol } = await supabase
+        .from('team_columns')
+        .select('input_template')
+        .eq('team_id', teamId)
+        .eq('key', 'completed')
+        .maybeSingle()
+      const completedTemplate = completedCol?.input_template
+      const incomplete = (rows ?? []).filter(
+        r => !isFilledBeyondTemplate(r.completed, completedTemplate)
+      )
+      if (!rows?.length) {
+        return NextResponse.json({ error: 'Немає рядків у плані' }, { status: 400 })
+      }
+      if (incomplete.length > 0) {
+        return NextResponse.json(
+          { error: 'Заповніть «Виконано» для всіх у плані перед відправкою' },
+          { status: 400 }
+        )
+      }
+    }
+
     const { data: teamColumns } = await supabase
       .from('team_columns')
       .select('key, label, is_system, hidden, sort_order')
       .eq('team_id', teamId)
       .order('sort_order')
 
-    const { data: superAdmins } = await supabase
-      .from('profiles')
-      .select('id, email, notify_email, notify_push')
-      .eq('role', 'super_admin')
-
-    const { data: deputies } = await supabase
+    // Admin client: deputies must see all co-leaders (RLS previously limited to self)
+    const admin = createAdminClient()
+    const { data: deputies } = await admin
       .from('team_admins')
-      .select('user_id, profile:profiles(id, email, notify_email, notify_push)')
+      .select(
+        'user_id, notify_email, notify_push, profile:profiles(id, email, notify_email, notify_push)'
+      )
       .eq('team_id', teamId)
 
-    const allLeaders = [
-      ...(superAdmins ?? []).map(a => ({
-        id: a.id,
-        email: a.email,
-        notify_email: a.notify_email !== false,
-        notify_push: a.notify_push !== false,
-      })),
-      ...(deputies ?? []).map(d => {
-        const p = d.profile as
-          | { id?: string; email?: string; notify_email?: boolean; notify_push?: boolean }
-          | { id?: string; email?: string; notify_email?: boolean; notify_push?: boolean }[]
-          | null
-        const prof = Array.isArray(p) ? p[0] : p
-        return {
-          id: prof?.id || d.user_id,
-          email: prof?.email,
-          notify_email: prof?.notify_email !== false,
-          notify_push: prof?.notify_push !== false,
-        }
-      }),
-    ]
-
-    let recipients = allLeaders
-    if (recipientIds?.length) {
-      const allow = new Set(recipientIds)
-      recipients = allLeaders.filter(a => allow.has(a.id))
-    }
+    const recipients = (deputies ?? []).map(d => {
+      const p = d.profile as
+        | { id?: string; email?: string; notify_email?: boolean; notify_push?: boolean }
+        | { id?: string; email?: string; notify_email?: boolean; notify_push?: boolean }[]
+        | null
+      const prof = Array.isArray(p) ? p[0] : p
+      const prefs = effectiveLeaderNotifyPrefs(d, {
+        email: prof?.notify_email !== false,
+        push: prof?.notify_push !== false,
+      })
+      return {
+        id: prof?.id || d.user_id,
+        email: prof?.email,
+        notify_email: prefs.email,
+        notify_push: prefs.push,
+      }
+    })
 
     const emails = [...new Set(
       recipients
@@ -116,7 +130,16 @@ export async function POST(req: NextRequest) {
     const emailEligibleIds = recipients.filter(a => a.notify_email && a.email).map(a => a.id)
 
     if (recipients.length === 0) {
-      return NextResponse.json({ error: 'Немає отримувачів' }, { status: 400 })
+      return NextResponse.json({ error: 'Немає керівництва команди' }, { status: 400 })
+    }
+    if (emails.length === 0 && recipientUserIds.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            'У керівництва вимкнено email і push (картка користувача або налаштування команди)',
+        },
+        { status: 400 }
+      )
     }
 
     const dateStr = formatUkDate(date)
@@ -151,9 +174,12 @@ export async function POST(req: NextRequest) {
           hidden: !!c.hidden,
         }))
         const tableHtml = buildDeptGroupedPlanTableHtml(emailRows, contentMode, extraCols)
+        const fromName = escapeHtml(profile.full_name || profile.email || 'Заступник')
         const html = `
           <div style="font-family: sans-serif; max-width: 900px; margin: 0 auto; padding: 24px;">
-            <h2 style="color:#2d6a4f;">${contentTitle} — ${team?.name ?? ''} — ${dateStr}</h2>
+            <h2 style="color:#2d6a4f;margin:0 0 4px;">${contentTitle} — ${escapeHtml(team?.name ?? '')}</h2>
+            <p style="color:#2d6a4f;font-size:16px;font-weight:600;margin:0 0 12px;">${dateStr}</p>
+            <p style="color:#555;margin:0 0 16px;">Від: <strong>${fromName}</strong></p>
             ${tableHtml}
             <p style="margin-top:16px;font-size:12px;color:#999;">PlanDay-GA</p>
           </div>

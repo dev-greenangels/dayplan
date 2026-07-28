@@ -2,7 +2,13 @@
 
 import { revalidatePath } from 'next/cache'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { requireAdmin, requireSuperAdmin, canManageTeam, getManagedTeamIds, isBoss } from '@/lib/auth'
+import {
+  requireSuperAdmin,
+  requirePeopleAccess,
+  canManageTeam,
+  getManagedTeamIds,
+  isBoss,
+} from '@/lib/auth'
 import { isMailConfigured, sendAppMail } from '@/lib/mail'
 import type { UserRole } from '@/lib/types'
 
@@ -47,7 +53,7 @@ async function sendLoginInviteEmail(email: string, fullName: string) {
 }
 
 export async function listPeople() {
-  const { supabase, profile } = await requireAdmin()
+  const { supabase, profile } = await requirePeopleAccess()
 
   const { data: profiles, error } = await supabase
     .from('profiles')
@@ -95,7 +101,7 @@ export async function approveUser(opts: {
   /** Extra teams for deputies (in addition to teamId) */
   teamIds?: string[]
 }) {
-  const { supabase, profile } = await requireAdmin()
+  const { supabase, profile } = await requirePeopleAccess()
   if (!ASSIGNABLE_ROLES.includes(opts.role)) return { error: 'Невірна роль' }
   if (opts.role === 'super_admin' && !isBoss(profile.role)) {
     return { error: 'Лише шеф може призначати шефів' }
@@ -165,7 +171,7 @@ export async function createPerson(opts: {
   /** Extra teams for deputies */
   teamIds?: string[]
 }) {
-  const { supabase, profile } = await requireAdmin()
+  const { supabase, profile } = await requirePeopleAccess()
   const email = opts.email.trim().toLowerCase()
   const fullName = opts.fullName.trim()
   if (!fullName) return { error: 'ПІБ обовʼязкове' }
@@ -192,22 +198,24 @@ export async function createPerson(opts: {
       .eq('email', email)
       .maybeSingle()
 
-    let userId = existingProfile?.id as string | undefined
-    let alreadySignedIn = false
-
-    if (!userId) {
-      const { data, error } = await admin.auth.admin.createUser({
-        email,
-        email_confirm: true,
-        user_metadata: { full_name: fullName, role: opts.role },
-      })
-      if (error) return { error: error.message }
-      if (!data.user) return { error: 'Не вдалося створити користувача' }
-      userId = data.user.id
-    } else {
-      const { data: authUser } = await admin.auth.admin.getUserById(userId)
-      alreadySignedIn = !!authUser.user?.last_sign_in_at
+    if (existingProfile?.id) {
+      return { error: 'Користувач з таким email уже існує' }
     }
+
+    const { data, error } = await admin.auth.admin.createUser({
+      email,
+      email_confirm: true,
+      user_metadata: { full_name: fullName, role: opts.role },
+    })
+    if (error) {
+      const msg = error.message || ''
+      if (/already|exist|registered/i.test(msg)) {
+        return { error: 'Користувач з таким email уже існує' }
+      }
+      return { error: error.message }
+    }
+    if (!data.user) return { error: 'Не вдалося створити користувача' }
+    const userId = data.user.id
 
     await admin.from('profiles').upsert({
       id: userId,
@@ -215,9 +223,6 @@ export async function createPerson(opts: {
       email,
       role: opts.role,
       department: '',
-      ...(alreadySignedIn
-        ? { invite_blocked: true, last_sign_in_at: new Date().toISOString() }
-        : {}),
     }, { onConflict: 'id' })
 
     if (opts.role === 'employee' || opts.role === 'sub_admin') {
@@ -241,14 +246,6 @@ export async function createPerson(opts: {
     }
 
     if (opts.sendInvite) {
-      if (alreadySignedIn) {
-        revalidatePath('/admin/people')
-        return {
-          success: true,
-          userId,
-          warning: 'Працівника додано. Запрошення не потрібне — людина вже входила в систему.',
-        }
-      }
       const invite = await sendLoginInviteEmail(email, fullName)
       if (invite.error) {
         revalidatePath('/admin/people')
@@ -282,7 +279,7 @@ export async function invitePerson(opts: {
 }
 
 export async function resendInvite(email: string) {
-  await requireAdmin()
+  await requirePeopleAccess()
   try {
     const admin = createAdminClient()
     const normalized = email.trim().toLowerCase()
@@ -342,7 +339,7 @@ export async function resendInvite(email: string) {
 }
 
 export async function updatePersonName(userId: string, fullName: string) {
-  const { supabase } = await requireAdmin()
+  const { supabase } = await requirePeopleAccess()
   const trimmed = fullName.trim()
   if (!trimmed) return { error: 'ПІБ обовʼязкове' }
   const { error } = await supabase
@@ -356,7 +353,7 @@ export async function updatePersonName(userId: string, fullName: string) {
 
 /** Change email only before the user has ever signed in (Auth + profiles). */
 export async function updatePersonEmail(userId: string, email: string) {
-  await requireAdmin()
+  await requirePeopleAccess()
   const trimmed = email.trim().toLowerCase()
   if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
     return { error: 'Невірний email' }
@@ -397,12 +394,23 @@ export async function updatePersonEmail(userId: string, email: string) {
 
 export async function updatePersonNotifyPrefs(
   userId: string,
-  prefs: { notify_email?: boolean; notify_push?: boolean }
+  prefs: {
+    notify_email?: boolean
+    notify_push?: boolean
+    notify_worker_send_push?: boolean
+  }
 ) {
-  const { supabase } = await requireAdmin()
-  const payload: { notify_email?: boolean; notify_push?: boolean } = {}
+  const { supabase } = await requirePeopleAccess()
+  const payload: {
+    notify_email?: boolean
+    notify_push?: boolean
+    notify_worker_send_push?: boolean
+  } = {}
   if (typeof prefs.notify_email === 'boolean') payload.notify_email = prefs.notify_email
   if (typeof prefs.notify_push === 'boolean') payload.notify_push = prefs.notify_push
+  if (typeof prefs.notify_worker_send_push === 'boolean') {
+    payload.notify_worker_send_push = prefs.notify_worker_send_push
+  }
   if (Object.keys(payload).length === 0) return { error: 'Немає змін' }
 
   const { error } = await supabase.from('profiles').update(payload).eq('id', userId)
@@ -412,7 +420,7 @@ export async function updatePersonNotifyPrefs(
 }
 
 export async function setDeputyTeams(userId: string, teamIds: string[]) {
-  const { supabase, profile } = await requireAdmin()
+  const { supabase, profile } = await requirePeopleAccess()
   const unique = [...new Set(teamIds.filter(Boolean))]
   if (unique.length === 0) return { error: 'Оберіть хоча б одну команду' }
 
@@ -455,7 +463,7 @@ export async function movePerson(opts: {
   teamId: string
   departmentId: string
 }) {
-  const { supabase, profile } = await requireAdmin()
+  const { supabase, profile } = await requirePeopleAccess()
   if (!(await canManageTeam(supabase, profile, opts.teamId))) {
     return { error: 'Немає доступу' }
   }

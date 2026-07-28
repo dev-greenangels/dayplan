@@ -1,13 +1,13 @@
-import { requireAdmin, getManagedTeamIds, isBoss } from '@/lib/auth'
+import { requirePeopleAccess, getManagedTeamIds, isBoss } from '@/lib/auth'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { avatarFromMetadata } from '@/lib/avatar'
 import type { Profile } from '@/lib/types'
 import PeopleManager from './people-manager'
 
 const SELECT_FULL =
-  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked, last_sign_in_at, notify_email, notify_push, avatar_url'
+  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked, last_sign_in_at, notify_email, notify_push, notify_worker_send_push, avatar_url'
 const SELECT_INVITE =
-  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked, notify_email, notify_push, avatar_url'
+  'id, full_name, email, role, department, created_at, invite_sent_at, invite_blocked, notify_email, notify_push, notify_worker_send_push, avatar_url'
 const SELECT_BASE = 'id, full_name, email, role, department, created_at'
 
 async function loadProfiles(
@@ -61,10 +61,16 @@ async function syncSignInFlags(people: Profile[]): Promise<Profile[]> {
       const av = authAvatar.get(p.id) || p.avatar_url || null
       const patch: { id: string; last_sign_in_at?: string; avatar_url?: string; invite_blocked?: boolean } = { id: p.id }
       let changed = false
-      if (at && at !== p.last_sign_in_at) {
-        patch.last_sign_in_at = at
-        patch.invite_blocked = true
-        changed = true
+      if (at) {
+        const sameSignIn =
+          !!p.last_sign_in_at &&
+          !Number.isNaN(Date.parse(at)) &&
+          Date.parse(at) === Date.parse(p.last_sign_in_at)
+        if (!sameSignIn || p.invite_blocked === false) {
+          patch.last_sign_in_at = at
+          patch.invite_blocked = true
+          changed = true
+        }
       }
       if (av && av !== p.avatar_url) {
         patch.avatar_url = av
@@ -88,6 +94,7 @@ async function syncSignInFlags(people: Profile[]): Promise<Profile[]> {
             payload.invite_blocked = true
           }
           if (u.avatar_url) payload.avatar_url = u.avatar_url
+          // Avoid no-op UPDATEs (same row still emits Realtime)
           return admin.from('profiles').update(payload).eq('id', u.id)
         })
       )
@@ -103,7 +110,7 @@ async function syncSignInFlags(people: Profile[]): Promise<Profile[]> {
 }
 
 export default async function PeoplePage() {
-  const { supabase, profile } = await requireAdmin()
+  const { supabase, profile } = await requirePeopleAccess()
   const managed = await getManagedTeamIds(supabase, profile)
 
   let teamsQuery = supabase

@@ -29,14 +29,19 @@ export default function AccountSettingsModal({
   membership?: AccountMembership
   onUpdated?: (patch: Partial<Profile>) => void
 }) {
+  const isEmployee = profile.role === 'employee'
   const [name, setName] = useState(profile.full_name || '')
   const [notifyEmail, setNotifyEmail] = useState(profile.notify_email !== false)
   const [notifyPush, setNotifyPush] = useState(profile.notify_push !== false)
+  const [notifyWorkerSend, setNotifyWorkerSend] = useState(
+    profile.notify_worker_send_push !== false
+  )
   const [msg, setMsg] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   const toast = useToast()
   const { status: pushStatus, error: pushError, enable: enablePush } = usePush()
 
+  const isLeader = profile.role === 'super_admin' || profile.role === 'sub_admin'
   const showMembership =
     profile.role === 'employee' ||
     profile.role === 'sub_admin' ||
@@ -47,28 +52,62 @@ export default function AccountSettingsModal({
     setName(profile.full_name || '')
     setNotifyEmail(profile.notify_email !== false)
     setNotifyPush(profile.notify_push !== false)
+    setNotifyWorkerSend(profile.notify_worker_send_push !== false)
     setMsg(null)
   }, [open, profile])
 
-  function save(partial?: { notify_email?: boolean; notify_push?: boolean; full_name?: string }) {
+  function save(partial?: {
+    notify_email?: boolean
+    notify_push?: boolean
+    notify_worker_send_push?: boolean
+    full_name?: string
+  }) {
     setMsg(null)
-    const nextName = partial?.full_name ?? name
+    const nextName = isEmployee
+      ? (profile.full_name || '')
+      : (partial?.full_name ?? name)
     const nextEmail = partial?.notify_email ?? notifyEmail
     const nextPush = partial?.notify_push ?? notifyPush
+    const nextWorker = partial?.notify_worker_send_push ?? notifyWorkerSend
+
+    const payload: {
+      full_name?: string
+      notify_email?: boolean
+      notify_push?: boolean
+      notify_worker_send_push?: boolean
+    } = {}
+
+    if (!isEmployee) {
+      const trimmed = nextName.trim()
+      if (trimmed && trimmed !== (profile.full_name || '').trim()) {
+        payload.full_name = trimmed
+      }
+    }
+    if (nextEmail !== (profile.notify_email !== false)) {
+      payload.notify_email = nextEmail
+    }
+    if (nextPush !== (profile.notify_push !== false)) {
+      payload.notify_push = nextPush
+    }
+    if (isLeader && nextWorker !== (profile.notify_worker_send_push !== false)) {
+      payload.notify_worker_send_push = nextWorker
+    }
+
+    if (Object.keys(payload).length === 0) return
+
     startTransition(async () => {
-      const res = await updateMyAccountSettings({
-        full_name: nextName,
-        notify_email: nextEmail,
-        notify_push: nextPush,
-      })
+      const res = await updateMyAccountSettings(payload)
       if (res.error) {
         toast.error(res.error)
         return
       }
       onUpdated?.({
-        full_name: nextName.trim(),
-        notify_email: nextEmail,
-        notify_push: nextPush,
+        ...(payload.full_name !== undefined ? { full_name: payload.full_name } : {}),
+        ...(payload.notify_email !== undefined ? { notify_email: payload.notify_email } : {}),
+        ...(payload.notify_push !== undefined ? { notify_push: payload.notify_push } : {}),
+        ...(payload.notify_worker_send_push !== undefined
+          ? { notify_worker_send_push: payload.notify_worker_send_push }
+          : {}),
       })
       setMsg('Збережено')
     })
@@ -92,19 +131,21 @@ export default function AccountSettingsModal({
           </div>
         </div>
 
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-muted-foreground">ПІБ</label>
-          <input
-            value={name}
-            onChange={e => setName(e.target.value)}
-            onBlur={() => {
-              if (name.trim() && name.trim() !== (profile.full_name || '').trim()) {
-                save({ full_name: name })
-              }
-            }}
-            className="rounded-lg border border-input bg-white px-3 py-2 text-sm"
-          />
-        </div>
+        {!isEmployee && (
+          <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-muted-foreground">ПІБ</label>
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              onBlur={() => {
+                if (name.trim() && name.trim() !== (profile.full_name || '').trim()) {
+                  save({ full_name: name })
+                }
+              }}
+              className="rounded-lg border border-input bg-white px-3 py-2 text-sm"
+            />
+          </div>
+        )}
 
         <div className="flex flex-col gap-1">
           <span className="text-xs font-medium text-muted-foreground">Email</span>
@@ -122,9 +163,27 @@ export default function AccountSettingsModal({
               <span className="text-xs font-medium text-muted-foreground">Команда</span>
               <span className="text-sm text-foreground">{membership?.teamName || '—'}</span>
             </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-muted-foreground">Відділ</span>
-              <span className="text-sm text-foreground">{membership?.departmentName || '—'}</span>
+            <div
+              className={`flex flex-col gap-1 ${
+                isEmployee
+                  ? 'rounded-lg border border-sky-200/80 bg-sky-50/70 px-3 py-2'
+                  : ''
+              }`}
+            >
+              <span
+                className={`text-xs font-medium ${
+                  isEmployee ? 'font-semibold text-sky-800/80' : 'text-muted-foreground'
+                }`}
+              >
+                Відділ
+              </span>
+              <span
+                className={`text-sm ${
+                  isEmployee ? 'font-semibold text-sky-950' : 'text-foreground'
+                }`}
+              >
+                {membership?.departmentName || '—'}
+              </span>
             </div>
           </div>
         )}
@@ -132,7 +191,9 @@ export default function AccountSettingsModal({
         <div className="rounded-xl border border-border/50 bg-muted/30 p-3">
           <p className="mb-2 text-xs font-semibold text-foreground">Сповіщення</p>
           <p className="mb-3 text-[11px] text-muted-foreground">
-            Окремо для email і push. Push також потребує дозволу браузера на цьому пристрої.
+            {isEmployee
+              ? 'Якщо вимкнено — ви не отримуватимете сповіщення про нові завдання (email і push). Push також потребує дозволу браузера на цьому пристрої.'
+              : 'Глобально для всіх команд. Якщо вимкнено — сповіщення не приходять навіть коли в команді канал увімкнено. Push також потребує дозволу браузера на цьому пристрої.'}
           </p>
           <div className="flex flex-col gap-2.5">
             <label className="flex items-center gap-2.5 text-sm text-foreground">
@@ -147,7 +208,7 @@ export default function AccountSettingsModal({
                   save({ notify_email: next })
                 }}
               />
-              Отримувати email
+              {isEmployee ? 'Email про завдання' : 'Отримувати email'}
             </label>
             <label className="flex items-center gap-2.5 text-sm text-foreground">
               <input
@@ -161,8 +222,24 @@ export default function AccountSettingsModal({
                   save({ notify_push: next })
                 }}
               />
-              Отримувати push
+              {isEmployee ? 'Push про завдання' : 'Отримувати push'}
             </label>
+            {isLeader && (
+              <label className="flex items-center gap-2.5 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  className="accent-primary h-4 w-4"
+                  checked={notifyWorkerSend}
+                  disabled={isPending}
+                  onChange={e => {
+                    const next = e.target.checked
+                    setNotifyWorkerSend(next)
+                    save({ notify_worker_send_push: next })
+                  }}
+                />
+                Пуш про розсилку завдань працівникам
+              </label>
+            )}
           </div>
 
           {notifyPush && pushStatus !== 'unsupported' && pushStatus !== 'loading' && (

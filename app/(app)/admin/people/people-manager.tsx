@@ -21,6 +21,7 @@ import PencilEdit from '@/components/pencil-edit'
 import UserAvatar, { PushStatusBell } from '@/components/user-avatar'
 import { useToast } from '@/components/toast-provider'
 import { formatUkDateTime } from '@/lib/format-date'
+import { useOrgRealtimeRefresh } from '@/hooks/use-org-realtime-refresh'
 
 interface Membership {
   user_id: string
@@ -73,17 +74,25 @@ export default function PeopleManager({
   const [msg, setMsg] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [toDelete, setToDelete] = useState<Profile | null>(null)
+  const [localPeople, setLocalPeople] = useState(people)
+  const [pendingCardId, setPendingCardId] = useState<string | null>(null)
+
+  useOrgRealtimeRefresh(true)
+
+  useEffect(() => {
+    setLocalPeople(people)
+  }, [people])
 
   const loggedIn = useMemo(() => new Set(loggedInIds), [loggedInIds])
   const pushActive = useMemo(() => new Set(pushActiveIds), [pushActiveIds])
 
   const filtered = useMemo(() => {
     const list =
-      roleFilter === 'all' ? people : people.filter(p => p.role === roleFilter)
+      roleFilter === 'all' ? localPeople : localPeople.filter(p => p.role === roleFilter)
     return [...list].sort((a, b) =>
       (a.full_name || a.email).localeCompare(b.full_name || b.email, 'uk')
     )
-  }, [people, roleFilter])
+  }, [localPeople, roleFilter])
 
   const membershipByUser = useMemo(() => {
     const map = new Map<string, Membership>()
@@ -138,13 +147,42 @@ export default function PeopleManager({
     })
   }
 
+  function patchPersonLocal(userId: string, patch: Partial<Profile>) {
+    setLocalPeople(prev => prev.map(p => (p.id === userId ? { ...p, ...patch } : p)))
+  }
+
+  function runNotify(
+    userId: string,
+    prefs: {
+      notify_email?: boolean
+      notify_push?: boolean
+      notify_worker_send_push?: boolean
+    }
+  ) {
+    const prev = localPeople.find(p => p.id === userId)
+    patchPersonLocal(userId, prefs)
+    setPendingCardId(userId)
+    startTransition(async () => {
+      const res = await updatePersonNotifyPrefs(userId, prefs)
+      setPendingCardId(null)
+      if (res.error) {
+        if (prev) patchPersonLocal(userId, {
+          notify_email: prev.notify_email,
+          notify_push: prev.notify_push,
+          notify_worker_send_push: prev.notify_worker_send_push,
+        })
+        toast.error(res.error)
+      }
+    })
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Люди</h1>
           <p className="text-sm text-muted-foreground">
-            Додавання, схвалення, переведення · Усього: {people.length}
+            Додавання, схвалення, переведення · Усього: {localPeople.length}
             {roleFilter !== 'all' ? ` · показано: ${filtered.length}` : ''}
           </p>
         </div>
@@ -201,7 +239,7 @@ export default function PeopleManager({
             pushActive={pushActive.has(person.id)}
             isSuperAdmin={isSuperAdmin}
             isSelf={person.id === currentUserId}
-            disabled={isPending}
+            disabled={isPending || pendingCardId === person.id}
             onApprove={(role, teamId, departmentId, teamIds) =>
               run(() => approveUser({ userId: person.id, role, teamId, departmentId, teamIds }))
             }
@@ -218,7 +256,7 @@ export default function PeopleManager({
             }
             onSaveName={name => run(() => updatePersonName(person.id, name))}
             onSaveEmail={email => run(() => updatePersonEmail(person.id, email))}
-            onSaveNotify={prefs => run(() => updatePersonNotifyPrefs(person.id, prefs))}
+            onSaveNotify={prefs => runNotify(person.id, prefs)}
           />
         ))}
         {filtered.length === 0 && (
@@ -456,7 +494,11 @@ function PersonCard({
   onSetRole: (role: UserRole, teamId?: string, departmentId?: string, teamIds?: string[]) => void
   onSaveName: (name: string) => void
   onSaveEmail: (email: string) => void
-  onSaveNotify: (prefs: { notify_email?: boolean; notify_push?: boolean }) => void
+  onSaveNotify: (prefs: {
+    notify_email?: boolean
+    notify_push?: boolean
+    notify_worker_send_push?: boolean
+  }) => void
 }) {
   const needsTeam =
     (person.role === 'employee' || person.role === 'sub_admin') && !currentMembership
@@ -573,27 +615,27 @@ function PersonCard({
           {hasLoggedIn ? (
             <p className="mt-0.5 text-xs text-muted-foreground">{person.email}</p>
           ) : (
-            <div className="mt-0.5">
+            <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
               <PencilEdit
                 value={person.email || ''}
                 disabled={disabled}
                 onSave={onSaveEmail}
                 textClassName="text-xs text-muted-foreground"
               />
+              {person.role !== 'pending' && (
+                <span className="inline-flex items-center gap-0.5 text-[11px] text-amber-700">
+                  <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                  ще не входив в додаток
+                </span>
+              )}
             </div>
           )}
           <p className="mt-1 text-xs text-muted-foreground">
             {ROLE_LABEL[person.role]} · {membershipLabel}
             {needsTeam && (
               <span className="ml-1 font-medium text-amber-700">· не в команді</span>
-            )}
-            {!hasLoggedIn && person.role !== 'pending' && (
-              <span className="ml-1 inline-flex items-center gap-0.5 text-amber-700">
-                <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-                ще не входив
-              </span>
             )}
           </p>
           {needsTeam && (
@@ -603,7 +645,11 @@ function PersonCard({
             </p>
           )}
           {person.role !== 'pending' && (
-            <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5">
+            <div className="mt-2.5 flex flex-col gap-1">
+              <p className="text-[10px] font-medium text-muted-foreground">
+                Сповіщення глобально (якщо вимкнено — не отримує ні з якої команди)
+              </p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
               <label className="flex items-center gap-1.5 text-xs text-foreground">
                 <input
                   type="checkbox"
@@ -624,6 +670,19 @@ function PersonCard({
                 />
                 Push
               </label>
+              {(person.role === 'super_admin' || person.role === 'sub_admin') && (
+                <label className="flex items-center gap-1.5 text-xs text-foreground">
+                  <input
+                    type="checkbox"
+                    className="accent-primary h-3.5 w-3.5"
+                    checked={person.notify_worker_send_push !== false}
+                    disabled={disabled}
+                    onChange={e => onSaveNotify({ notify_worker_send_push: e.target.checked })}
+                  />
+                  Пуш про розсилку завдань
+                </label>
+              )}
+              </div>
             </div>
           )}
           </div>

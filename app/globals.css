@@ -182,6 +182,16 @@
     transform: scale(0.96);
     opacity: 0.88;
   }
+  /* Card press: only when pressing the card itself, not nested buttons */
+  .tap-card {
+    transition: transform 0.12s ease, opacity 0.12s ease, box-shadow 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .tap-card:active:not(:disabled):not(:has(button:active)) {
+    transform: scale(0.98);
+    opacity: 0.92;
+  }
   .plan-month-sticky {
     position: sticky;
     top: var(--app-header-offset);
@@ -227,6 +237,7 @@
     }
     .plan-page {
       padding-inline: 0.25rem;
+      overflow-anchor: none;
     }
   }
   @keyframes scale-in {

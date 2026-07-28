@@ -74,19 +74,22 @@ export default function UserAvatar({
   )
 }
 
-/** Small bell: active = device push subscribed. */
+/** Small bell: preference / status for push notifications. */
 export function PushStatusBell({
   active,
   className = '',
+  title,
 }: {
   active: boolean
   className?: string
+  title?: string
 }) {
+  const label = title ?? (active ? 'Push увімкнено' : 'Push вимкнено')
   return (
     <span
       className={`inline-flex shrink-0 ${active ? 'text-violet-600' : 'text-muted-foreground/45'} ${className}`}
-      title={active ? 'Push увімкнено на пристрої' : 'Push не активовано'}
-      aria-label={active ? 'Push увімкнено' : 'Push не активовано'}
+      title={label}
+      aria-label={label}
     >
       {active ? (
         <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden>

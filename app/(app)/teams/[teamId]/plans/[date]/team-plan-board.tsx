@@ -2,23 +2,31 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
-import type { Department, Profile, TaskRow, Team, TeamColumn } from '@/lib/types'
-import { addPlanMembers, copyPlanFromPreviousDay, deleteDayPlan, removePlanMember, saveTeamPlan, setTeamPlanTasksLocked, updateTaskRowFields } from '@/app/actions/plans'
+import type { Department, Profile, TaskRow, TaskRowPhoto, Team, TeamColumn } from '@/lib/types'
+import { addPlanMembers, copyPlanFromPreviousDay, deleteDayPlan, removePlanMember, saveTeamPlan, setDayPlanTasksLocked, updateTaskRowFields } from '@/app/actions/plans'
+import { isFilledBeyondTemplate } from '@/lib/column-templates'
 import {
   daysInMonth,
   formatUkDate,
   formatUkDateTime,
+  formatUkDayMonth,
   formatUkDayTab,
   formatUkMonthYear,
   formatUkShortDate,
   todayISO,
 } from '@/lib/format-date'
+import AutoGrowTextarea from '@/components/auto-grow-textarea'
+import FieldPhotos from '@/components/field-photos'
 import ConfirmDialog from '@/components/confirm-dialog'
 import Modal from '@/components/modal'
 import UserAvatar, { PushStatusBell } from '@/components/user-avatar'
 import { useToast } from '@/components/toast-provider'
 import { usePlanChromeLock } from '@/components/plan-chrome-lock'
-import { createClient } from '@/lib/supabase/client'
+import { usePlanRealtimeSync } from '@/hooks/use-plan-realtime-sync'
+import {
+  PlanMonthCalendarGrid,
+  usePlanScheduleChromeHost,
+} from '@/components/plan-schedule-chrome'
 
 type RowWithProfile = TaskRow & {
   profile?: Profile | null
@@ -42,13 +50,14 @@ interface Leader {
 }
 
 type SendChannels = 'email' | 'push' | 'all'
-type DigestContent = 'full' | 'planned' | 'completed'
 type DigestReceipts = Record<string, { email?: string; push?: string }>
 
 interface Props {
   team: Team
   date: string
   planId: string | null
+  /** Day-level lock; default unlocked */
+  planTasksLocked?: boolean
   digestSentAt: string | null
   digestReceipts: DigestReceipts
   planDates: string[]
@@ -60,6 +69,7 @@ interface Props {
   leaders: Leader[]
   isAdmin: boolean
   isSubAdmin: boolean
+  isSuperAdmin?: boolean
   canEditTasks: boolean
   currentUserId: string
   loggedInIds: string[]
@@ -67,6 +77,7 @@ interface Props {
   pushActiveIds: string[]
   /** Dates where this employee already has a task_row (employees only) */
   memberPlanDates?: string[]
+  initialPhotos?: TaskRowPhoto[]
 }
 
 interface LocalRow {
@@ -76,6 +87,8 @@ interface LocalRow {
   full_name: string
   email: string
   avatar_url?: string | null
+  notify_email: boolean
+  notify_push: boolean
   shift: string
   planned: string
   completed: string
@@ -103,6 +116,8 @@ function mapRows(initialRows: RowWithProfile[], fallbackShift = '8:00-18:00'): L
     full_name: r.profile?.full_name?.trim() || 'Працівник',
     email: r.profile?.email || '',
     avatar_url: r.profile?.avatar_url ?? null,
+    notify_email: r.profile?.notify_email !== false,
+    notify_push: r.profile?.notify_push !== false,
     shift: r.shift || fallbackShift,
     planned: r.planned || '',
     completed: r.completed || '',
@@ -118,6 +133,7 @@ export default function TeamPlanBoard({
   team,
   date,
   planId,
+  planTasksLocked = false,
   digestSentAt: initialDigestSentAt,
   digestReceipts: initialDigestReceipts,
   planDates,
@@ -126,15 +142,17 @@ export default function TeamPlanBoard({
   columns,
   members,
   rows: initialRows,
-  leaders: initialLeaders,
+  leaders: _initialLeaders,
   isAdmin,
   isSubAdmin,
+  isSuperAdmin = false,
   canEditTasks,
   currentUserId,
   loggedInIds,
   hiddenFromPlanIds,
   pushActiveIds,
   memberPlanDates = [],
+  initialPhotos = [],
 }: Props) {
   const router = useRouter()
   const toast = useToast()
@@ -149,7 +167,6 @@ export default function TeamPlanBoard({
   const [removeTarget, setRemoveTarget] = useState<LocalRow | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [sendOpen, setSendOpen] = useState(false)
-  const [digestOpen, setDigestOpen] = useState(false)
   const [employeeReportBusy, setEmployeeReportBusy] = useState(false)
   const [employeeReportSentAt, setEmployeeReportSentAt] = useState<string | null>(() => {
     const mine = initialRows.find(r => r.employee_id === currentUserId)
@@ -157,10 +174,41 @@ export default function TeamPlanBoard({
   })
   const [datePickerOpen, setDatePickerOpen] = useState(false)
   const [pickerMonth, setPickerMonth] = useState(date) // any day in visible month
-  const [tasksLocked, setTasksLocked] = useState(() => team.plan_tasks_locked !== false)
+  const [tasksLocked, setTasksLocked] = useState(() => planTasksLocked === true)
   const [lockBusy, setLockBusy] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [activePlanId, setActivePlanId] = useState(planId)
+  const [fieldSaveState, setFieldSaveState] = useState<Record<string, 'saving' | 'saved'>>({})
+  const [completedInvalidIds, setCompletedInvalidIds] = useState<Set<string>>(() => new Set())
+  const [photosByRow, setPhotosByRow] = useState<Record<string, TaskRowPhoto[]>>(() => {
+    const map: Record<string, TaskRowPhoto[]> = {}
+    for (const p of initialPhotos) {
+      if (!map[p.task_row_id]) map[p.task_row_id] = []
+      map[p.task_row_id].push(p)
+    }
+    return map
+  })
+  useEffect(() => {
+    const map: Record<string, TaskRowPhoto[]> = {}
+    for (const p of initialPhotos) {
+      if (!map[p.task_row_id]) map[p.task_row_id] = []
+      map[p.task_row_id].push(p)
+    }
+    setPhotosByRow(map)
+  }, [initialPhotos, planId, date])
+
+  function photosFor(rowId: string | undefined, field: 'planned' | 'completed') {
+    if (!rowId) return []
+    return (photosByRow[rowId] ?? []).filter(p => p.field === field)
+  }
+
+  function setPhotosFor(rowId: string, field: 'planned' | 'completed', next: TaskRowPhoto[]) {
+    setPhotosByRow(prev => {
+      const others = (prev[rowId] ?? []).filter(p => p.field !== field)
+      return { ...prev, [rowId]: [...others, ...next] }
+    })
+  }
+
   const dayStripRef = useRef<HTMLDivElement>(null)
   const monthBarRef = useRef<HTMLDivElement>(null)
   const monthBarSentinelRef = useRef<HTMLDivElement>(null)
@@ -170,18 +218,34 @@ export default function TeamPlanBoard({
   const [monthBarStuck, setMonthBarStuck] = useState(false)
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blurSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const employeeIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const dirtyFieldsRef = useRef<Set<string>>(new Set())
   const localRowsRef = useRef<LocalRow[]>([])
   const flushSaveRef = useRef<() => Promise<boolean>>(async () => true)
   const savingRef = useRef(false)
   const aliveRef = useRef(true)
-  const committedEmployeeRef = useRef<Map<string, { completed: string; notes: string }>>(new Map())
-  const loggedIn = useMemo(() => new Set(loggedInIds), [loggedInIds])
+  const committedEmployeeRef = useRef<Map<string, { completed: string; notes: string; extra: Record<string, string> }>>(new Map())
+  const [loggedIn, setLoggedIn] = useState(() => new Set(loggedInIds))
   const hiddenSet = useMemo(() => new Set(hiddenFromPlanIds), [hiddenFromPlanIds])
   const pushActive = useMemo(() => new Set(pushActiveIds), [pushActiveIds])
+
+  useEffect(() => {
+    setLoggedIn(new Set(loggedInIds))
+  }, [loggedInIds])
   const defaultShift = team.default_shift?.trim() || '8:00-18:00'
   const showSendWorkers = team.show_send_worker_emails !== false
   const showSendLeadership = team.show_send_leadership !== false
   const allowEditTasks = canEditTasks && !tasksLocked
+  const isPastDay = date < todayISO()
+  const completedTemplate = useMemo(
+    () => columns.find(c => c.key === 'completed')?.input_template ?? null,
+    [columns]
+  )
+
+  function isRowFrozen(row: LocalRow) {
+    // Past day + plan digest sent OR this row's report sent → no edit (planned/completed)
+    return isPastDay && (!!digestSentAt || !!row.report_sent_at)
+  }
 
   useEffect(() => {
     const mine = initialRows.find(r => r.employee_id === currentUserId)
@@ -241,8 +305,8 @@ export default function TeamPlanBoard({
   }, [team.id, date, planId, initialDigestSentAt, initialDigestReceipts])
 
   useEffect(() => {
-    setTasksLocked(team.plan_tasks_locked !== false)
-  }, [team.id, team.plan_tasks_locked])
+    setTasksLocked(planTasksLocked === true)
+  }, [team.id, date, planId, planTasksLocked])
 
   useEffect(() => {
     const el = monthBarRef.current
@@ -290,50 +354,39 @@ export default function TeamPlanBoard({
     }
   }, [])
 
-  // Live lock sync for admins only (boss + deputies)
-  useEffect(() => {
-    if (!isAdmin) return
-    const supabase = createClient()
-    const channel = supabase
-      .channel(`team-lock:${team.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'teams',
-          filter: `id=eq.${team.id}`,
-        },
-        (payload: { new: Record<string, unknown> }) => {
-          const next = payload.new?.plan_tasks_locked !== false
-          setTasksLocked(prev => {
-            if (prev === next) return prev
-            queueMicrotask(() => {
-              toast.info(next ? 'План заблоковано' : 'План розблоковано')
-            })
-            return next
-          })
-        }
-      )
-      .subscribe()
-    return () => {
-      void supabase.removeChannel(channel)
-    }
-  }, [isAdmin, team.id, toast])
+  usePlanRealtimeSync({
+    teamId: team.id,
+    date,
+    planId: activePlanId,
+    setActivePlanId,
+    setTasksLocked,
+    setDigestSentAt,
+    setDigestReceipts,
+    setLocalRows: updater => {
+      setLocalRows(prev => updater(prev) as LocalRow[])
+    },
+    dirtyFieldsRef,
+    onProfileSignedIn: userId => {
+      setLoggedIn(prev => {
+        if (prev.has(userId)) return prev
+        const next = new Set(prev)
+        next.add(userId)
+        return next
+      })
+    },
+  })
 
   useEffect(() => {
-    return () => setChromeBlocked(false)
+    return () => {
+      queueMicrotask(() => setChromeBlocked(false))
+    }
   }, [setChromeBlocked])
 
-  const leaders = useMemo(() => {
-    return initialLeaders.map(l => ({
-      ...l,
-      email_sent_at: digestReceipts[l.id]?.email ?? l.email_sent_at ?? null,
-      push_sent_at: digestReceipts[l.id]?.push ?? l.push_sent_at ?? null,
-    }))
-  }, [initialLeaders, digestReceipts])
+  useEffect(() => {
+    if (!isSubAdmin) return
+    queueMicrotask(() => setChromeBlocked(tasksLocked))
+  }, [isSubAdmin, tasksLocked, setChromeBlocked])
 
-  // Sync from server when date changes or after refresh while clean
   const rowsSyncKey = `${date}:${planId}:${initialRows.map(r => r.id ?? r.employee_id).join(',')}`
   useEffect(() => {
     if (!dirtyRef.current) {
@@ -360,18 +413,43 @@ export default function TeamPlanBoard({
     if (!isAdmin || !dirtyRef.current) return true
     if (savingRef.current) return true
     savingRef.current = true
-    if (aliveRef.current) setSaveStatus('saving')
+    const pendingKeys = [...dirtyFieldsRef.current]
+    if (aliveRef.current) {
+      setSaveStatus('saving')
+      if (pendingKeys.length) {
+        setFieldSaveState(prev => {
+          const next = { ...prev }
+          for (const k of pendingKeys) next[k] = 'saving'
+          return next
+        })
+      }
+    }
     try {
       const res = await saveTeamPlan(team.id, date, rowPayload())
       if (!aliveRef.current) return !res.error
       if (res.error) {
         setSaveStatus('error')
+        if (pendingKeys.length) {
+          setFieldSaveState(prev => {
+            const next = { ...prev }
+            for (const k of pendingKeys) delete next[k]
+            return next
+          })
+        }
         toast.error(res.error)
         return false
       }
       dirtyRef.current = false
       setDirty(false)
       setSaveStatus('saved')
+      dirtyFieldsRef.current.clear()
+      if (pendingKeys.length) {
+        setFieldSaveState(prev => {
+          const next = { ...prev }
+          for (const k of pendingKeys) next[k] = 'saved'
+          return next
+        })
+      }
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
       return true
     } finally {
@@ -394,7 +472,7 @@ export default function TeamPlanBoard({
     if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
     idleTimerRef.current = setTimeout(() => {
       void flushSaveRef.current()
-    }, 30_000)
+    }, 10_000)
   }, [])
 
   useEffect(() => {
@@ -415,14 +493,41 @@ export default function TeamPlanBoard({
       window.removeEventListener('beforeunload', onBeforeUnload)
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
       if (blurSaveTimerRef.current) clearTimeout(blurSaveTimerRef.current)
+      if (employeeIdleTimerRef.current) clearTimeout(employeeIdleTimerRef.current)
     }
   }, [])
 
+  const isSharedPc = team.work_mode === 'shared'
+  const incompleteCompletedIds = useMemo(() => {
+    return localRows
+      .filter(r => !isFilledBeyondTemplate(r.completed, completedTemplate))
+      .map(r => r.employee_id)
+  }, [localRows, completedTemplate])
+
   const hasAnyPlanned = localRows.some(r => r.planned.trim().length > 0)
-  const hasAnyCompleted = localRows.some(r => r.completed.trim().length > 0)
-  const canSendDigest = hasAnyPlanned || hasAnyCompleted
+  const hasAnyCompleted = localRows.some(r =>
+    isFilledBeyondTemplate(r.completed, completedTemplate)
+  )
   const myRow = localRows.find(r => r.employee_id === currentUserId)
-  const canSendMyReport = !!(myRow && myRow.completed.trim().length > 0)
+  const myCompletedOk = !!(myRow && isFilledBeyondTemplate(myRow.completed, completedTemplate))
+  const myRowFrozen = !!(myRow && isRowFrozen(myRow))
+
+  function assertSharedCompletedFilled(): boolean {
+    if (!isSharedPc) return true
+    if (localRows.length === 0) {
+      toast.error('Немає рядків у плані')
+      return false
+    }
+    if (incompleteCompletedIds.length === 0) return true
+    setCompletedInvalidIds(new Set(incompleteCompletedIds))
+    toast.error('Заповніть «Виконано» для всіх у плані перед відправкою')
+    return false
+  }
+
+  function trySendLeadershipDigest() {
+    if (!assertSharedCompletedFilled()) return
+    void sendLeadershipDigest()
+  }
 
   useEffect(() => {
     const el = dayStripRef.current?.querySelector<HTMLElement>('[data-selected="true"]')
@@ -495,6 +600,7 @@ export default function TeamPlanBoard({
   }
 
   function canEditField(field: string, row: LocalRow) {
+    if (isRowFrozen(row)) return false
     if (isAdmin) {
       if (!allowEditTasks && (field === 'planned' || field === 'shift' || field.startsWith('extra:'))) {
         return false
@@ -505,21 +611,115 @@ export default function TeamPlanBoard({
     return field === 'completed' || field === 'notes' || field.startsWith('extra:')
   }
 
-  async function commitEmployeeField(row: LocalRow, field: 'completed' | 'notes', value: string) {
-    if (!row.id || isAdmin) return
+  function fieldSaveKey(rowKey: string, field: string) {
+    return `${rowKey}:${field}`
+  }
+
+  function rowKeyOf(row: LocalRow) {
+    return row.id || row.employee_id
+  }
+
+  function colFieldKey(col: TeamColumn) {
+    return col.key === 'shift' || col.key === 'planned' || col.key === 'completed' || col.key === 'notes'
+      ? col.key
+      : `extra:${col.key}`
+  }
+
+  function setFieldsSaving(keys: string[]) {
+    if (!keys.length) return
+    setFieldSaveState(prev => {
+      const next = { ...prev }
+      for (const k of keys) next[k] = 'saving'
+      return next
+    })
+  }
+
+  function setFieldsSaved(keys: string[]) {
+    if (!keys.length) return
+    setFieldSaveState(prev => {
+      const next = { ...prev }
+      for (const k of keys) next[k] = 'saved'
+      return next
+    })
+  }
+
+  function clearFieldSaved(row: LocalRow, field: string) {
+    const key = fieldSaveKey(rowKeyOf(row), field)
+    dirtyFieldsRef.current.add(key)
+    setFieldSaveState(prev => {
+      if (!prev[key]) return prev
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+  }
+
+  async function commitEmployeeRow(row: LocalRow, onlyField?: string) {
+    if (!row.id || isAdmin || isRowFrozen(row)) return
     const key = row.id
     const prev = committedEmployeeRef.current.get(key) ?? {
+      completed: '',
+      notes: '',
+      extra: {},
+    }
+    const next = {
       completed: row.completed,
       notes: row.notes,
+      extra: { ...row.extra },
     }
-    if (prev[field] === value) return
-    const next = { ...prev, [field]: value }
+    const changed: string[] = []
+    if (prev.completed !== next.completed) changed.push('completed')
+    if (prev.notes !== next.notes) changed.push('notes')
+    const extraKeys = new Set([...Object.keys(prev.extra), ...Object.keys(next.extra)])
+    for (const ek of extraKeys) {
+      if ((prev.extra[ek] || '') !== (next.extra[ek] || '')) changed.push(`extra:${ek}`)
+    }
+    const toSave = onlyField ? changed.filter(f => f === onlyField) : changed
+    if (toSave.length === 0) return
+
+    const statusKeys = toSave.map(f => fieldSaveKey(row.id!, f))
+    setFieldsSaving(statusKeys)
     committedEmployeeRef.current.set(key, next)
-    const res = await updateTaskRowFields(row.id, { [field]: value })
+    const res = await updateTaskRowFields(row.id, {
+      completed: next.completed,
+      notes: next.notes,
+      extra: next.extra,
+    })
     if (res.error) {
       committedEmployeeRef.current.set(key, prev)
+      setFieldSaveState(prevState => {
+        const n = { ...prevState }
+        for (const k of statusKeys) delete n[k]
+        return n
+      })
       toast.error(res.error)
+      return
     }
+    setFieldsSaved(statusKeys)
+  }
+
+  function scheduleEmployeeIdleSave(employeeId: string) {
+    if (isAdmin) return
+    if (employeeIdleTimerRef.current) clearTimeout(employeeIdleTimerRef.current)
+    employeeIdleTimerRef.current = setTimeout(() => {
+      const row = localRowsRef.current.find(r => r.employee_id === employeeId)
+      if (row) void commitEmployeeRow(row)
+    }, 10_000)
+  }
+
+  async function commitEmployeeField(row: LocalRow, field: 'completed' | 'notes' | `extra:${string}`, value: string) {
+    if (!row.id || isAdmin || isRowFrozen(row)) return
+    const latest = localRowsRef.current.find(r => r.id === row.id) ?? row
+    const patched =
+      field === 'completed'
+        ? { ...latest, completed: value }
+        : field === 'notes'
+          ? { ...latest, notes: value }
+          : {
+              ...latest,
+              extra: { ...latest.extra, [field.slice(6)]: value },
+            }
+    await commitEmployeeRow(patched, field)
   }
 
   function cellValue(row: LocalRow, col: TeamColumn): string {
@@ -531,15 +731,29 @@ export default function TeamPlanBoard({
   }
 
   function onCellChange(row: LocalRow, col: TeamColumn, value: string) {
+    const fieldKey = colFieldKey(col)
+    clearFieldSaved(row, fieldKey)
+    if (col.key === 'completed') {
+      setCompletedInvalidIds(prev => {
+        if (!prev.has(row.employee_id)) return prev
+        const next = new Set(prev)
+        next.delete(row.employee_id)
+        return next
+      })
+    }
     if (col.key === 'shift') updateRow(row.employee_id, { shift: value })
     else if (col.key === 'planned') updateRow(row.employee_id, { planned: value })
     else if (col.key === 'completed') updateRow(row.employee_id, { completed: value })
     else if (col.key === 'notes') updateRow(row.employee_id, { notes: value })
     else setExtra(row.employee_id, col.key, value)
+    if (!isAdmin && row.employee_id === currentUserId) {
+      scheduleEmployeeIdleSave(row.employee_id)
+    }
   }
 
-  async function sendDigest(recipientIds: string[], channels: SendChannels, content: DigestContent) {
-    if ((!hasAnyPlanned && !hasAnyCompleted) || recipientIds.length === 0) return
+  async function sendLeadershipDigest() {
+    if ((!hasAnyPlanned && !hasAnyCompleted) && localRows.length === 0) return
+    if (!assertSharedCompletedFilled()) return
     setDigestSending(true)
     setMsg(null)
     try {
@@ -553,10 +767,13 @@ export default function TeamPlanBoard({
       const res = await fetch('/api/send-plan-digest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teamId: team.id, date, recipientIds, channels, content }),
+        body: JSON.stringify({ teamId: team.id, date, channels: 'all', content: 'full' }),
       })
       const json = await res.json()
       if (!res.ok || json.error) {
+        if (String(json.error || '').includes('Виконано')) {
+          setCompletedInvalidIds(new Set(incompleteCompletedIds))
+        }
         toast.error(json.error || `HTTP ${res.status}`)
       } else {
         setDigestSentAt(json.digest_sent_at ?? new Date().toISOString())
@@ -565,7 +782,6 @@ export default function TeamPlanBoard({
         if (json.emailSent) parts.push(`email: ${json.emailSent}`)
         if (json.pushSent) parts.push(`push: ${json.pushSent}`)
         setMsg(parts.length ? `План керівництву (${parts.join(', ')})` : 'План надіслано керівництву')
-        setDigestOpen(false)
         router.refresh()
       }
     } catch {
@@ -575,15 +791,26 @@ export default function TeamPlanBoard({
   }
 
   async function sendEmployeeLeadershipReport() {
+    if (myRowFrozen) {
+      toast.error('Звіт за минулий день уже відправлено — редагування та повторна відправка заборонені')
+      return
+    }
     setEmployeeReportBusy(true)
     setMsg(null)
     try {
+      if (!assertSharedCompletedFilled()) {
+        setEmployeeReportBusy(false)
+        return
+      }
+      if (!myRow || !myCompletedOk) {
+        setCompletedInvalidIds(new Set(myRow ? [myRow.employee_id] : []))
+        toast.error('Заповніть поле «Виконано» перед відправкою')
+        setEmployeeReportBusy(false)
+        return
+      }
       if (isAdmin) await flushSave()
       else if (myRow?.id) {
-        await updateTaskRowFields(myRow.id, {
-          completed: myRow.completed,
-          notes: myRow.notes,
-        })
+        await commitEmployeeRow(myRow)
       }
       const res = await fetch('/api/send-employee-leadership-report', {
         method: 'POST',
@@ -592,13 +819,19 @@ export default function TeamPlanBoard({
       })
       const json = await res.json()
       if (!res.ok || json.error) {
+        if (String(json.error || '').includes('Виконано')) {
+          setCompletedInvalidIds(new Set(incompleteCompletedIds.length ? incompleteCompletedIds : myRow ? [myRow.employee_id] : []))
+        }
         toast.error(json.error || `HTTP ${res.status}`)
       } else {
+        setCompletedInvalidIds(new Set())
         const sentAt = (json.sent_at as string) || new Date().toISOString()
         setEmployeeReportSentAt(sentAt)
         setLocalRows(prev =>
           prev.map(r =>
-            r.employee_id === currentUserId ? { ...r, report_sent_at: sentAt } : r
+            isSharedPc || r.employee_id === currentUserId
+              ? { ...r, report_sent_at: sentAt }
+              : r
           )
         )
         const parts: string[] = []
@@ -629,12 +862,29 @@ export default function TeamPlanBoard({
   }
 
   function removeEmployeeFromPlan(row: LocalRow) {
+    if (!allowEditTasks) {
+      toast.error('План заблоковано — спочатку розблокуйте день')
+      return
+    }
+    if (isRowFrozen(row)) {
+      toast.error('Минулий день із надісланим звітом — видалення недоступне')
+      return
+    }
     setRemoveTarget(row)
   }
 
   async function confirmRemoveEmployee() {
     const row = removeTarget
     if (!row) return
+    if (!allowEditTasks || isRowFrozen(row)) {
+      setRemoveTarget(null)
+      toast.error(
+        isRowFrozen(row)
+          ? 'Минулий день із надісланим звітом — видалення недоступне'
+          : 'План заблоковано — спочатку розблокуйте день'
+      )
+      return
+    }
     setMsg(null)
     setRemoveTarget(null)
     startTransition(async () => {
@@ -656,7 +906,65 @@ export default function TeamPlanBoard({
   const dateLabel = formatUkDate(date)
   const monthLabel = formatUkMonthYear(date)
   const shortDate = formatUkShortDate(date)
+  const dayMonth = formatUkDayMonth(date)
   const colCount = 1 + visibleCols.length
+
+  const { setChrome: setScheduleChrome } = usePlanScheduleChromeHost()
+
+  const toggleTasksLock = useCallback(() => {
+    if (lockBusy) return
+    if (!(isAdmin && canEditTasks)) return
+    const next = !tasksLocked
+    setTasksLocked(next)
+    if (isSubAdmin) setChromeBlocked(next)
+    setLockBusy(true)
+    void setDayPlanTasksLocked(team.id, date, next).then(res => {
+      setLockBusy(false)
+      if (res.error) {
+        setTasksLocked(!next)
+        if (isSubAdmin) setChromeBlocked(!next)
+        toast.error(res.error)
+        return
+      }
+      if (res.planId) setActivePlanId(res.planId)
+    })
+  }, [
+    lockBusy,
+    isAdmin,
+    canEditTasks,
+    tasksLocked,
+    isSubAdmin,
+    setChromeBlocked,
+    team.id,
+    date,
+    toast,
+  ])
+
+  useEffect(() => {
+    setScheduleChrome({
+      date,
+      dateLabelNoYear: dayMonth,
+      showLock: isAdmin && canEditTasks,
+      tasksLocked,
+      lockBusy,
+      onToggleLock: toggleTasksLock,
+      isDayAllowed: (day: string) => isAdmin || memberDateSet.size === 0 || memberDateSet.has(day),
+      goToDate: (d: string) => {
+        void goToDate(d)
+      },
+    })
+    return () => setScheduleChrome(null)
+  }, [
+    setScheduleChrome,
+    date,
+    dayMonth,
+    isAdmin,
+    canEditTasks,
+    tasksLocked,
+    lockBusy,
+    toggleTasksLock,
+    memberDateSet,
+  ])
 
   const DEPT_STYLES = [
     { head: 'bg-emerald-100/90 text-emerald-950', row: 'bg-emerald-50/30', identity: 'bg-emerald-100/45' },
@@ -668,26 +976,62 @@ export default function TeamPlanBoard({
   ] as const
 
   return (
-    <div className={`mx-auto min-w-0 max-w-[1600px] ${isAdmin ? 'pb-24 sm:pb-0' : 'pb-28'}`}>
+    <div className="mx-auto min-w-0 max-w-[1600px] pb-24 xl:pb-0">
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
             <h1 className="text-2xl font-bold text-foreground">{team.name}</h1>
-          </div>
-          {isAdmin && (
-            <p className="mt-0.5 text-[11px] text-muted-foreground">
-              {saveStatus === 'saving' && 'Зберігається…'}
-              {saveStatus === 'saved' && !dirty && 'Збережено'}
-              {saveStatus === 'error' && 'Помилка збереження'}
-              {dirty && saveStatus !== 'saving' && 'Є незбережені зміни'}
+            <p className="text-xs font-medium text-muted-foreground sm:hidden">
+              Плани на {monthLabel}
             </p>
+          </div>
+          {isAdmin && dirty && saveStatus !== 'saving' && (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">Є незбережені зміни</p>
           )}
         </div>
-        {isAdmin && (
-          <div className="hidden flex-wrap gap-2 sm:flex">
+        {!isAdmin && (
+          <div className="hidden flex-wrap gap-2 xl:flex">
             <button
-              onClick={() => setAddOpen(true)}
-              disabled={isPending}
+              type="button"
+              onClick={() => { void sendEmployeeLeadershipReport() }}
+              disabled={employeeReportBusy || myRowFrozen}
+              title={
+                myRowFrozen
+                  ? 'Звіт за минулий день уже відправлено'
+                  : 'Надіслати свій звіт керівництву'
+              }
+              className={`tap-btn flex min-h-[52px] min-w-[168px] flex-col items-center justify-center rounded-xl px-4 py-1.5 text-sm font-semibold leading-tight disabled:opacity-40 ${
+                employeeReportSentAt
+                  ? 'border border-green-300 bg-green-50 text-green-800'
+                  : 'glass-send-btn text-primary-foreground'
+              }`}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <SendEnvelopeIcon className="h-4 w-4" />
+                {employeeReportBusy
+                  ? '...'
+                  : employeeReportSentAt
+                    ? 'Звіт керівництву ✓'
+                    : 'Звіт керівництву'}
+              </span>
+              <span className={`mt-0.5 text-[10px] font-normal ${employeeReportSentAt ? 'text-green-700/80' : 'invisible text-primary-foreground/80'}`}>
+                {employeeReportSentAt ? formatUkDateTime(employeeReportSentAt) : '00.00.0000 00:00'}
+              </span>
+            </button>
+          </div>
+        )}
+        {isAdmin && (
+          <div className="hidden flex-wrap gap-2 xl:flex">
+            <button
+              onClick={() => {
+                if (isPastDay && !isSuperAdmin) {
+                  toast.error('У минулі дні працівників може додавати лише шеф')
+                  return
+                }
+                setAddOpen(true)
+              }}
+              disabled={isPending || (isPastDay && !isSuperAdmin)}
+              title={isPastDay && !isSuperAdmin ? 'У минулі дні працівників може додавати лише шеф' : undefined}
               className="tap-btn rounded-lg border border-border bg-white/70 px-3 py-2 text-sm font-medium disabled:opacity-40"
             >
               Додати працівників
@@ -705,9 +1049,9 @@ export default function TeamPlanBoard({
             )}
             {showSendLeadership && (
               <button
-                onClick={() => setDigestOpen(true)}
-                disabled={digestSending || !canSendDigest}
-                title="Надіслати зведення плану шефам і заступникам"
+                onClick={() => trySendLeadershipDigest()}
+                disabled={digestSending || localRows.length === 0}
+                title="Надіслати всю таблицю керівництву (email/push — з налаштувань команди)"
                 className={`tap-btn flex min-h-[52px] min-w-[168px] flex-col items-center justify-center rounded-xl px-4 py-1.5 text-sm font-semibold leading-tight disabled:opacity-40 ${
                   digestSentAt
                     ? 'border border-green-300 bg-green-50 text-green-800'
@@ -755,15 +1099,18 @@ export default function TeamPlanBoard({
       />
       <div
         ref={monthBarRef}
-        className="plan-month-sticky -mx-3 mb-2 px-3 sm:-mx-4 sm:px-4"
+        className="plan-month-sticky -mx-3 mb-4 px-3 sm:-mx-4 sm:px-4"
       >
         <div
-          className={`boty-glass flex items-center justify-between gap-2 border border-border/50 px-3 py-2 transition-[border-radius] duration-150 ${
+          className={`boty-glass flex items-center gap-2 border border-border/50 px-2 py-2 transition-[border-radius] duration-150 sm:gap-3 sm:px-3 ${
             monthBarStuck ? 'rounded-t-none rounded-b-lg' : 'rounded-lg'
           }`}
         >
-          <div className="flex min-w-0 items-center gap-1.5">
-            <p className="min-w-0 truncate text-sm font-semibold text-foreground">Плани на {monthLabel}</p>
+          {/* Desktop: month title + lock */}
+          <div className="hidden min-w-0 shrink-0 items-center gap-1.5 sm:flex">
+            <p className="min-w-0 truncate whitespace-nowrap text-sm font-semibold text-foreground">
+              Плани на {monthLabel}
+            </p>
             {isAdmin && canEditTasks && (
               <button
                 type="button"
@@ -773,21 +1120,7 @@ export default function TeamPlanBoard({
                     : 'Заблокувати редагування завдань'
                 }
                 disabled={lockBusy}
-                onClick={() => {
-                  if (lockBusy) return
-                  const next = !tasksLocked
-                  setTasksLocked(next)
-                  if (isSubAdmin) setChromeBlocked(next)
-                  setLockBusy(true)
-                  void setTeamPlanTasksLocked(team.id, next).then(res => {
-                    setLockBusy(false)
-                    if (res.error) {
-                      setTasksLocked(!next)
-                      if (isSubAdmin) setChromeBlocked(!next)
-                      toast.error(res.error)
-                    }
-                  })
-                }}
+                onClick={toggleTasksLock}
                 className={`tap-btn shrink-0 rounded-lg p-1.5 ${
                   tasksLocked
                     ? 'bg-amber-100 text-amber-800'
@@ -806,17 +1139,60 @@ export default function TeamPlanBoard({
               </button>
             )}
           </div>
+
+          {/* Day strip fills the middle */}
+          <div
+            ref={dayStripRef}
+            className="flex min-w-0 flex-1 gap-1 overflow-x-auto overscroll-x-contain scroll-smooth [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            {dateTabs.map(tab => {
+              const label = formatUkDayTab(tab.date)
+              return (
+                <button
+                  key={tab.date}
+                  type="button"
+                  data-selected={tab.isSelected ? 'true' : undefined}
+                  onClick={() => void goToDate(tab.date)}
+                  className={`tap-btn flex shrink-0 flex-col items-center rounded-lg text-center transition ${
+                    monthBarStuck ? 'min-w-[36px] px-1.5 py-1' : 'min-w-[48px] px-2 py-1.5'
+                  } ${
+                    tab.isSelected
+                      ? 'bg-primary text-primary-foreground shadow-sm'
+                      : tab.isToday
+                        ? 'border-2 border-primary/70 bg-primary/15 text-foreground shadow-[inset_0_0_0_1px_rgba(45,106,79,0.12)]'
+                        : tab.hasPlan
+                          ? 'bg-primary/10 text-foreground hover:bg-primary/15'
+                          : 'border border-border/60 text-muted-foreground hover:bg-muted'
+                  }`}
+                >
+                  {!monthBarStuck && (
+                    <span className={`text-[10px] uppercase opacity-80 ${tab.isToday && !tab.isSelected ? 'font-semibold text-primary' : ''}`}>
+                      {tab.isToday && !tab.isSelected ? 'сьогодні' : label.weekday}
+                    </span>
+                  )}
+                  <span className="text-sm font-semibold leading-tight">{label.day}</span>
+                  {(tab.isToday || tab.hasPlan) && !tab.isSelected && (
+                    <span className={`mt-0.5 h-1 w-1 rounded-full ${tab.isToday ? 'bg-primary' : 'bg-primary/60'}`} />
+                  )}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Calendar: mobile icon-only on the right; desktop icon + date */}
           <div className="relative shrink-0" ref={datePickerRef}>
             <button
               type="button"
               onClick={() => setDatePickerOpen(v => !v)}
               aria-expanded={datePickerOpen}
-              className="tap-btn inline-flex items-center gap-2 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-foreground shadow-sm"
+              aria-label="Календар"
+              title="Календар"
+              className="tap-btn inline-flex items-center gap-2 rounded-lg border border-border bg-white p-2 text-sm font-semibold text-foreground shadow-sm sm:rounded-xl sm:px-3 sm:py-2"
             >
-              <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <svg className="h-4 w-4 text-muted-foreground sm:h-4 sm:w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
-              {shortDate}
+              <span className="hidden sm:inline">{shortDate}</span>
             </button>
             {datePickerOpen && (
               <div
@@ -826,114 +1202,19 @@ export default function TeamPlanBoard({
                   WebkitBackdropFilter: 'blur(12px)',
                 }}
               >
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    className="tap-btn rounded-lg border border-border bg-white px-2.5 py-1.5 text-sm font-semibold"
-                    onClick={() => {
-                      const [y, m] = pickerMonth.split('-').map(Number)
-                      const dt = new Date(Date.UTC(y, m - 2, 1))
-                      setPickerMonth(dt.toISOString().slice(0, 10))
-                    }}
-                  >
-                    ‹
-                  </button>
-                  <p className="text-sm font-semibold text-foreground">{formatUkMonthYear(pickerMonth)}</p>
-                  <button
-                    type="button"
-                    className="tap-btn rounded-lg border border-border bg-white px-2.5 py-1.5 text-sm font-semibold"
-                    onClick={() => {
-                      const [y, m] = pickerMonth.split('-').map(Number)
-                      const dt = new Date(Date.UTC(y, m, 1))
-                      setPickerMonth(dt.toISOString().slice(0, 10))
-                    }}
-                  >
-                    ›
-                  </button>
-                </div>
-                <div className="grid grid-cols-7 gap-0.5 text-center text-[10px] font-medium text-muted-foreground">
-                  {['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'нд'].map(d => (
-                    <span key={d} className="py-1">{d}</span>
-                  ))}
-                </div>
-                <div className="grid grid-cols-7 gap-0.5">
-                  {(() => {
-                    const days = daysInMonth(pickerMonth)
-                    if (days.length === 0) return null
-                    const [y, m, d0] = days[0].split('-').map(Number)
-                    const monFirstPad = (new Date(Date.UTC(y, m - 1, d0)).getUTCDay() + 6) % 7
-                    const today = todayISO()
-                    const cells: ReactNode[] = []
-                    for (let i = 0; i < monFirstPad; i++) {
-                      cells.push(<span key={`pad-${i}`} />)
-                    }
-                    for (const day of days) {
-                      const dayNum = Number(day.slice(8, 10))
-                      const selected = day === date
-                      const isToday = day === today
-                      const allowed = isAdmin || memberDateSet.size === 0 || memberDateSet.has(day)
-                      cells.push(
-                        <button
-                          key={day}
-                          type="button"
-                          disabled={!allowed}
-                          onClick={() => {
-                            if (!allowed) return
-                            setDatePickerOpen(false)
-                            void goToDate(day)
-                          }}
-                          className={`tap-btn aspect-square rounded-lg text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-30 ${
-                            selected
-                              ? 'bg-primary text-primary-foreground shadow-sm'
-                              : isToday
-                                ? 'bg-primary/15 text-primary'
-                                : 'text-foreground hover:bg-muted'
-                          }`}
-                        >
-                          {dayNum}
-                        </button>
-                      )
-                    }
-                    return cells
-                  })()}
-                </div>
+                <PlanMonthCalendarGrid
+                  pickerMonth={pickerMonth}
+                  setPickerMonth={setPickerMonth}
+                  selectedDate={date}
+                  isDayAllowed={day => isAdmin || memberDateSet.size === 0 || memberDateSet.has(day)}
+                  onSelect={day => {
+                    setDatePickerOpen(false)
+                    void goToDate(day)
+                  }}
+                />
               </div>
             )}
           </div>
-        </div>
-      </div>
-
-      <div className="mb-4 min-w-0 rounded-xl border border-border/50 bg-white/50 p-2">
-        <div
-          ref={dayStripRef}
-          className="flex max-w-full gap-1 overflow-x-auto overscroll-x-contain pb-1 scroll-smooth [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        >
-          {dateTabs.map(tab => {
-            const label = formatUkDayTab(tab.date)
-            return (
-              <button
-                key={tab.date}
-                type="button"
-                data-selected={tab.isSelected ? 'true' : undefined}
-                onClick={() => void goToDate(tab.date)}
-                className={`tap-btn flex min-w-[48px] shrink-0 flex-col items-center rounded-lg px-2 py-1.5 text-center transition ${
-                  tab.isSelected
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : tab.hasPlan
-                      ? 'bg-primary/10 text-foreground hover:bg-primary/15'
-                      : tab.isToday
-                        ? 'bg-muted/60 text-foreground'
-                        : 'border border-border/60 text-muted-foreground hover:bg-muted'
-                }`}
-              >
-                <span className="text-[10px] uppercase opacity-80">{label.weekday}</span>
-                <span className="text-sm font-semibold leading-tight">{label.day}</span>
-                {(tab.isToday || tab.hasPlan) && !tab.isSelected && (
-                  <span className="mt-0.5 h-1 w-1 rounded-full bg-primary/60" />
-                )}
-              </button>
-            )
-          })}
         </div>
       </div>
 
@@ -962,23 +1243,22 @@ export default function TeamPlanBoard({
         </div>
       )}
 
-      <div className="glass-card hidden sm:block">
-        {/* No overflow wrapper — sticky thead needs the viewport as scrollport */}
-        <table className="w-full min-w-[900px] table-auto text-sm">
+      <div className="glass-card hidden min-w-0 max-w-full xl:block">
+        <table className="w-full table-fixed text-sm">
             <thead>
               <tr className="border-b border-border/40 text-left text-muted-foreground">
-                <th className="plan-table-sticky-th w-0 whitespace-nowrap px-3 py-2.5 text-sm font-medium text-muted-foreground">
+                <th className="plan-table-sticky-th w-[16%] min-w-[10.5rem] px-2 py-2.5 text-sm font-medium text-muted-foreground xl:px-3">
                   Працівник
                 </th>
                 {visibleCols.map(c => (
                   <th
                     key={c.id}
-                    className={`plan-table-sticky-th px-3 py-2.5 text-sm font-medium text-muted-foreground ${
+                    className={`plan-table-sticky-th px-2 py-2.5 text-sm font-medium text-muted-foreground xl:px-3 ${
                       c.key === 'planned' || c.key === 'completed' || c.key === 'notes'
-                        ? 'min-w-[240px] w-[28%]'
+                        ? 'w-[18%] min-w-0'
                         : c.key === 'shift'
-                          ? 'w-0 whitespace-nowrap'
-                          : 'min-w-[140px]'
+                          ? 'w-[7%] whitespace-nowrap'
+                          : 'w-[12%] min-w-0'
                     }`}
                   >
                     <span className="inline-flex items-center gap-1.5">
@@ -1010,24 +1290,34 @@ export default function TeamPlanBoard({
                           notLoggedIn && allowEditTasks ? 'bg-amber-50/70' : ''
                         } ${rowIdx < section.rows.length - 1 ? 'border-b border-border/55' : 'border-b border-border/25'}`}
                       >
-                        <td className="w-0 whitespace-nowrap px-3 py-2">
+                        <td className="min-w-0 w-[16%] px-2 py-2 xl:px-3">
                           <RowIdentity
                             row={row}
                             isAdmin={isAdmin}
-                            notLoggedIn={notLoggedIn && allowEditTasks}
-                            onRemove={isAdmin && allowEditTasks ? () => removeEmployeeFromPlan(row) : undefined}
-                            removeDisabled={isPending}
+                            notLoggedIn={notLoggedIn}
+                            pushActive={pushActive.has(row.employee_id)}
+                            onRemove={isAdmin ? () => removeEmployeeFromPlan(row) : undefined}
+                            removeDisabled={
+                              isPending || !allowEditTasks || isRowFrozen(row)
+                            }
+                            removeTitle={
+                              isRowFrozen(row)
+                                ? 'Минулий день із надісланим звітом — видалення недоступне'
+                                : !allowEditTasks
+                                  ? 'План заблоковано — спочатку розблокуйте день'
+                                  : 'Прибрати з плану на цей день'
+                            }
                           />
                         </td>
                         {visibleCols.map(c => (
                           <td
                             key={c.id}
-                            className={`px-1 py-2 ${
+                            className={`min-w-0 px-1 py-2 ${
                               c.key === 'planned' || c.key === 'completed' || c.key === 'notes'
-                                ? 'w-[28%]'
+                                ? 'w-[18%]'
                                 : c.key === 'shift'
-                                  ? 'w-0 whitespace-nowrap'
-                                  : ''
+                                  ? 'w-[7%] whitespace-nowrap'
+                                  : 'w-[12%]'
                             }`}
                           >
                             <PlanField
@@ -1038,10 +1328,42 @@ export default function TeamPlanBoard({
                               onChange={v => onCellChange(row, c, v)}
                               onBlurAdmin={() => { scheduleBlurSave() }}
                               onBlurEmployee={v => {
-                                if (row.id && (c.key === 'completed' || c.key === 'notes')) {
-                                  void commitEmployeeField(row, c.key as 'completed' | 'notes', v)
+                                if (!row.id) return
+                                if (c.key === 'completed' || c.key === 'notes') {
+                                  void commitEmployeeField(row, c.key, v)
+                                } else if (!c.is_system) {
+                                  void commitEmployeeField(row, `extra:${c.key}`, v)
                                 }
                               }}
+                              saveState={
+                                fieldSaveState[fieldSaveKey(rowKeyOf(row), colFieldKey(c))]
+                              }
+                              invalid={
+                                c.key === 'completed' && completedInvalidIds.has(row.employee_id)
+                              }
+                              rowId={row.id}
+                              photos={
+                                c.key === 'planned' || c.key === 'completed'
+                                  ? photosFor(row.id, c.key)
+                                  : undefined
+                              }
+                              canUploadPhoto={
+                                (c.key === 'planned' || c.key === 'completed') &&
+                                !!row.id &&
+                                canEditField(c.key, row) &&
+                                (c.key === 'completed' || isAdmin)
+                              }
+                              canDeletePhoto={
+                                (c.key === 'planned' || c.key === 'completed') &&
+                                (isAdmin || row.employee_id === currentUserId)
+                              }
+                              onPhotosChange={
+                                c.key === 'planned' || c.key === 'completed'
+                                  ? next => {
+                                      if (row.id) setPhotosFor(row.id, c.key as 'planned' | 'completed', next)
+                                    }
+                                  : undefined
+                              }
                             />
                           </td>
                         ))}
@@ -1063,7 +1385,7 @@ export default function TeamPlanBoard({
       </div>
 
       {/* Mobile: separate cards per worker for clearer scanning */}
-      <div className="flex flex-col gap-4 sm:hidden">
+      <div className="flex flex-col gap-4 xl:hidden">
         {localRows.length === 0 ? (
           <div className="glass-card px-4 py-8 text-center text-sm text-muted-foreground">
             {isAdmin ? 'Натисніть «Додати», щоб заповнити план' : 'План ще порожній'}
@@ -1089,9 +1411,20 @@ export default function TeamPlanBoard({
                         <RowIdentity
                           row={row}
                           isAdmin={isAdmin}
-                          notLoggedIn={notLoggedIn && allowEditTasks}
-                          onRemove={isAdmin && allowEditTasks ? () => removeEmployeeFromPlan(row) : undefined}
-                          removeDisabled={isPending}
+                          notLoggedIn={notLoggedIn}
+                          pushActive={pushActive.has(row.employee_id)}
+                          removeCorner
+                          onRemove={isAdmin ? () => removeEmployeeFromPlan(row) : undefined}
+                          removeDisabled={
+                            isPending || !allowEditTasks || isRowFrozen(row)
+                          }
+                          removeTitle={
+                            isRowFrozen(row)
+                              ? 'Минулий день із надісланим звітом — видалення недоступне'
+                              : !allowEditTasks
+                                ? 'План заблоковано — спочатку розблокуйте день'
+                                : 'Прибрати з плану на цей день'
+                          }
                         />
                       </div>
                       <div className="flex flex-col gap-3">
@@ -1100,8 +1433,8 @@ export default function TeamPlanBoard({
                           if (c.key === 'shift') {
                             return (
                               <div key={c.id} className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-                                <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-foreground/70">
-                                  {COL_ICONS[c.key] ? <span className="mr-1 normal-case">{COL_ICONS[c.key]}</span> : null}
+                                <span className="shrink-0 text-xs font-bold tracking-wide text-foreground">
+                                  {COL_ICONS[c.key] ? <span className="mr-1 font-normal">{COL_ICONS[c.key]}</span> : null}
                                   {c.label}
                                 </span>
                                 {isAdmin ? (
@@ -1122,10 +1455,37 @@ export default function TeamPlanBoard({
                             )
                           }
                           return (
-                          <div key={c.id} className="flex flex-col gap-1.5">
-                            <label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-foreground/70">
-                              {COL_ICONS[c.key] ? <span className="normal-case">{COL_ICONS[c.key]}</span> : null}
-                              {c.label}
+                          <div
+                            key={c.id}
+                            className={`flex flex-col gap-1.5 ${
+                              c.key === 'completed'
+                                ? 'border-t border-border/45 pt-3 mt-0.5'
+                                : ''
+                            }`}
+                          >
+                            <label className="flex items-center gap-1.5 text-xs font-bold tracking-wide text-foreground">
+                              {COL_ICONS[c.key] ? <span className="font-normal">{COL_ICONS[c.key]}</span> : null}
+                              <span className="flex-1">{c.label}</span>
+                              {c.key === 'planned' &&
+                                isSuperAdmin &&
+                                val.trim() !== '' && (
+                                <button
+                                  type="button"
+                                  title="Копіювати заплановане"
+                                  aria-label="Копіювати заплановане"
+                                  className="tap-btn ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-50/80 text-sky-700/80 hover:bg-sky-100 hover:text-sky-900 active:bg-sky-100"
+                                  onClick={() => {
+                                    void navigator.clipboard.writeText(val).then(
+                                      () => toast.info('Скопійовано'),
+                                      () => toast.error('Не вдалося скопіювати')
+                                    )
+                                  }}
+                                >
+                                  <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                  </svg>
+                                </button>
+                              )}
                             </label>
                             <PlanField
                               col={c}
@@ -1135,11 +1495,43 @@ export default function TeamPlanBoard({
                               onChange={v => onCellChange(row, c, v)}
                               onBlurAdmin={() => { scheduleBlurSave() }}
                               onBlurEmployee={v => {
-                                if (row.id && (c.key === 'completed' || c.key === 'notes')) {
-                                  void commitEmployeeField(row, c.key as 'completed' | 'notes', v)
+                                if (!row.id) return
+                                if (c.key === 'completed' || c.key === 'notes') {
+                                  void commitEmployeeField(row, c.key, v)
+                                } else if (!c.is_system) {
+                                  void commitEmployeeField(row, `extra:${c.key}`, v)
                                 }
                               }}
                               compact
+                              saveState={
+                                fieldSaveState[fieldSaveKey(rowKeyOf(row), colFieldKey(c))]
+                              }
+                              invalid={
+                                c.key === 'completed' && completedInvalidIds.has(row.employee_id)
+                              }
+                              rowId={row.id}
+                              photos={
+                                c.key === 'planned' || c.key === 'completed'
+                                  ? photosFor(row.id, c.key)
+                                  : undefined
+                              }
+                              canUploadPhoto={
+                                (c.key === 'planned' || c.key === 'completed') &&
+                                !!row.id &&
+                                canEditField(c.key, row) &&
+                                (c.key === 'completed' || isAdmin)
+                              }
+                              canDeletePhoto={
+                                (c.key === 'planned' || c.key === 'completed') &&
+                                (isAdmin || row.employee_id === currentUserId)
+                              }
+                              onPhotosChange={
+                                c.key === 'planned' || c.key === 'completed'
+                                  ? next => {
+                                      if (row.id) setPhotosFor(row.id, c.key as 'planned' | 'completed', next)
+                                    }
+                                  : undefined
+                              }
                             />
                           </div>
                           )
@@ -1179,6 +1571,8 @@ export default function TeamPlanBoard({
                 full_name: m.profile?.full_name?.trim() || 'Працівник',
                 email: m.profile?.email || '',
                 avatar_url: m.profile?.avatar_url ?? null,
+                notify_email: m.profile?.notify_email !== false,
+                notify_push: m.profile?.notify_push !== false,
                 shift: defaultShift,
                 planned: '',
                 completed: '',
@@ -1256,15 +1650,6 @@ export default function TeamPlanBoard({
         }}
       />
 
-      <DigestModal
-        open={digestOpen}
-        leaders={leaders}
-        busy={digestSending}
-        pushActiveIds={pushActive}
-        onClose={() => setDigestOpen(false)}
-        onSend={(ids, channels, content) => { void sendDigest(ids, channels, content) }}
-      />
-
       <ConfirmDialog
         open={deleteOpen}
         title="Видалити план?"
@@ -1303,16 +1688,22 @@ export default function TeamPlanBoard({
 
       {isAdmin && (
         <div
-          className="fixed inset-x-0 bottom-0 z-30 px-3 sm:hidden"
+          className="fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
           style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
         >
           <div className="boty-glass mx-auto flex max-w-[1600px] items-stretch justify-around gap-0.5 rounded-lg px-1.5 py-2">
             <button
               type="button"
-              onClick={() => setAddOpen(true)}
-              disabled={isPending}
+              onClick={() => {
+                if (isPastDay && !isSuperAdmin) {
+                  toast.error('У минулі дні працівників може додавати лише шеф')
+                  return
+                }
+                setAddOpen(true)
+              }}
+              disabled={isPending || (isPastDay && !isSuperAdmin)}
               className="tap-btn flex flex-1 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-[10px] font-medium text-foreground disabled:opacity-40"
-              title="Додати працівників"
+              title={isPastDay && !isSuperAdmin ? 'У минулі дні працівників може додавати лише шеф' : 'Додати працівників'}
             >
               <span className="flex h-9 w-9 items-center justify-center rounded-full bg-white/70 text-foreground shadow-sm">
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1338,8 +1729,8 @@ export default function TeamPlanBoard({
             {showSendLeadership && (
               <button
                 type="button"
-                onClick={() => setDigestOpen(true)}
-                disabled={digestSending || !canSendDigest}
+                onClick={() => trySendLeadershipDigest()}
+                disabled={digestSending || localRows.length === 0}
                 className={`tap-btn flex flex-1 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-[10px] font-semibold disabled:opacity-40 ${
                   digestSentAt ? 'text-green-700' : 'text-primary'
                 }`}
@@ -1383,29 +1774,35 @@ export default function TeamPlanBoard({
 
       {!isAdmin && (
         <div
-          className="fixed inset-x-0 bottom-0 z-30 px-3"
-          style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
+          className="fixed inset-x-0 bottom-0 z-30 px-3 xl:hidden"
+          style={{ paddingBottom: 'max(0.35rem, env(safe-area-inset-bottom))' }}
         >
-          <div className="boty-glass mx-auto flex max-w-[1600px] justify-center rounded-lg px-1.5 py-2">
+          <div className="boty-glass mx-auto flex max-w-[1600px] justify-center rounded-lg px-1 py-1">
             <button
               type="button"
               onClick={() => { void sendEmployeeLeadershipReport() }}
-              disabled={employeeReportBusy || !canSendMyReport}
-              title={canSendMyReport ? 'Надіслати свій звіт керівництву' : 'Спочатку заповніть «Виконано»'}
-              className={`tap-btn flex flex-col items-center gap-0.5 rounded-lg px-6 py-1 text-[10px] font-semibold disabled:opacity-40 ${
+              disabled={employeeReportBusy || myRowFrozen}
+              title={
+                myRowFrozen
+                  ? 'Звіт за минулий день уже відправлено'
+                  : 'Надіслати свій звіт керівництву'
+              }
+              className={`tap-btn flex flex-col items-center gap-0 rounded-lg px-5 py-0.5 text-[11px] font-semibold leading-tight disabled:opacity-40 ${
                 employeeReportSentAt ? 'text-green-700' : 'text-primary'
               }`}
             >
-              <span className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-sm ${
-                employeeReportSentAt ? 'bg-green-100 text-green-800' : 'bg-primary text-primary-foreground'
+              <span className={`relative flex h-11 w-11 items-center justify-center rounded-full shadow-[0_4px_14px_oklch(0.42_0.12_155_/_40%)] ${
+                employeeReportSentAt
+                  ? 'bg-green-100 text-green-800'
+                  : 'bg-[linear-gradient(135deg,oklch(0.42_0.12_155),oklch(0.48_0.13_150))] text-primary-foreground'
               }`}>
-                <SendEnvelopeIcon className="h-5 w-5" />
+                <SendEnvelopeIcon className="h-6 w-6" />
                 {employeeReportSentAt && (
                   <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-green-600 text-[8px] text-white">✓</span>
                 )}
               </span>
               Звіт керівництву
-              <span className={`text-[9px] font-normal ${employeeReportSentAt ? 'text-green-700/90' : 'invisible'}`}>
+              <span className={`text-[9px] font-normal leading-none ${employeeReportSentAt ? 'text-green-700/90' : 'invisible'}`}>
                 {employeeReportSentAt ? formatUkDateTime(employeeReportSentAt) : '00.00.0000 00:00'}
               </span>
             </button>
@@ -1433,54 +1830,128 @@ function RowIdentity({
   row,
   isAdmin,
   notLoggedIn,
+  pushActive,
+  removeCorner,
   onRemove,
   removeDisabled,
+  removeTitle,
 }: {
   row: LocalRow
   isAdmin: boolean
   notLoggedIn: boolean
+  pushActive?: boolean
+  /** Mobile: delete button in top-right corner */
+  removeCorner?: boolean
   onRemove?: () => void
   removeDisabled?: boolean
+  removeTitle?: string
 }) {
+  const removeBtn = onRemove ? (
+    <button
+      type="button"
+      title={removeTitle ?? 'Прибрати з плану на цей день'}
+      disabled={removeDisabled}
+      onClick={onRemove}
+      className={`tap-btn shrink-0 rounded-lg bg-red-50/90 p-1.5 text-red-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-40 ${
+        removeCorner ? 'absolute right-0 top-0 z-10' : ''
+      }`}
+    >
+      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+        />
+      </svg>
+    </button>
+  ) : null
+
   return (
-    <div className="flex w-max items-start gap-2">
-      {onRemove && (
-        <button
-          type="button"
-          title="Прибрати з плану на цей день"
-          disabled={removeDisabled}
-          onClick={onRemove}
-          className="tap-btn shrink-0 rounded-lg bg-red-50/90 p-1.5 text-red-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-40"
-        >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-            />
-          </svg>
-        </button>
-      )}
+    <div className={`flex min-w-0 items-start gap-2 ${removeCorner ? 'relative w-full pr-9' : 'w-full max-w-full'}`}>
+      {!removeCorner && removeBtn}
+      {removeCorner && removeBtn}
       <UserAvatar url={row.avatar_url} name={row.full_name} size={32} />
-      <div>
-        <div className="whitespace-nowrap text-[15px] font-semibold leading-tight text-foreground">
-          {row.full_name}
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="flex min-w-0 items-center gap-1.5 text-[15px] font-semibold leading-tight text-foreground">
+          <span className="min-w-0 truncate">{row.full_name}</span>
+          {isAdmin && (
+            <PushStatusBell
+              active={!!pushActive && row.notify_push}
+              className="shrink-0"
+              title={
+                !row.notify_push
+                  ? 'Push сповіщення вимкнено'
+                  : pushActive
+                    ? 'Push увімкнено (є підписка на пристрої)'
+                    : 'Push увімкнено в налаштуваннях, але ще немає підписки на пристрої'
+              }
+            />
+          )}
         </div>
         {isAdmin && (
-          <div className="whitespace-nowrap text-xs text-muted-foreground">{row.email}</div>
-        )}
-        {isAdmin && row.plan_email_sent_at && (
-          <div className="mt-1 flex items-center gap-1 whitespace-nowrap text-[10px] font-medium text-green-700">
-            <span title="Email надіслано">✉✓</span>
-            <span>{formatUkShortDate(row.plan_email_sent_at)}</span>
+          <div
+            className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-muted-foreground"
+            title={row.notify_email ? 'Email сповіщення увімкнено' : 'Email сповіщення вимкнено'}
+          >
+            <span className="min-w-0 truncate">{row.email}</span>
+            {row.notify_email ? (
+              <svg
+                className="h-3.5 w-3.5 shrink-0 text-emerald-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+                aria-hidden
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+            ) : (
+              <svg
+                className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+                aria-hidden
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4l16 16" />
+              </svg>
+            )}
           </div>
         )}
-        {isAdmin && notLoggedIn && (
-          <div className="mt-0.5 inline-flex items-center gap-0.5 whitespace-nowrap text-[10px] font-medium text-amber-700/90">
-            <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-            </svg>
-            ще не входив
+        {isAdmin && (row.plan_email_sent_at || row.plan_push_sent_at || notLoggedIn) && (
+          <div
+            className={`mt-1 flex items-start gap-2 text-[10px] font-medium ${
+              (row.plan_email_sent_at || row.plan_push_sent_at) && notLoggedIn
+                ? 'justify-between'
+                : ''
+            }`}
+          >
+            {(row.plan_email_sent_at || row.plan_push_sent_at) && (
+              <div className="min-w-0 flex flex-col gap-0.5">
+                {row.plan_email_sent_at && (
+                  <div className="flex items-center gap-1 whitespace-nowrap text-green-700">
+                    <span title="Email надіслано">✉✓</span>
+                    <span>{formatUkDateTime(row.plan_email_sent_at)}</span>
+                  </div>
+                )}
+                {row.plan_push_sent_at && (
+                  <div className="flex items-center gap-1 whitespace-nowrap text-violet-700">
+                    <span title="Push надіслано">🔔✓</span>
+                    <span>{formatUkDateTime(row.plan_push_sent_at)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+            {notLoggedIn && (
+              <div className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap text-amber-700/90">
+                <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                ще не входив
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1497,6 +1968,13 @@ function PlanField({
   onBlurAdmin,
   onBlurEmployee,
   compact,
+  saveState,
+  invalid,
+  rowId,
+  photos,
+  canUploadPhoto,
+  canDeletePhoto,
+  onPhotosChange,
 }: {
   row?: LocalRow
   col: TeamColumn
@@ -1507,6 +1985,13 @@ function PlanField({
   onBlurAdmin: () => void
   onBlurEmployee: (v: string) => void
   compact?: boolean
+  saveState?: 'saving' | 'saved'
+  invalid?: boolean
+  rowId?: string
+  photos?: TaskRowPhoto[]
+  canUploadPhoto?: boolean
+  canDeletePhoto?: boolean
+  onPhotosChange?: (next: TaskRowPhoto[]) => void
 }) {
   const isTextArea = col.key === 'planned' || col.key === 'completed' || col.key === 'notes' || !col.is_system
   const isShift = col.key === 'shift'
@@ -1527,11 +2012,60 @@ function PlanField({
           : 'border-emerald-300 bg-emerald-50/70 shadow-[0_1px_2px_rgba(15,23,42,0.05)]'
         : 'border-border bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
   const plannedAsText = col.key === 'planned' && !isAdmin
-  const minW = compact || isShift ? '' : 'min-w-[180px]'
+  const minW = compact || isShift ? '' : 'min-w-0'
   const fieldShadow = lockedLook ? 'shadow-none' : 'shadow-[0_1px_2px_rgba(15,23,42,0.06)]'
+  const invalidTone = invalid ? '!border-red-400 ring-1 ring-red-300/80' : ''
+  const padForStatus = saveState ? 'pr-7' : ''
+
+  function withSaveBadge(node: ReactNode) {
+    return (
+      <div className="relative">
+        {node}
+        {saveState === 'saving' && (
+          <span
+            className="pointer-events-none absolute right-1.5 top-1.5 text-[10px] font-semibold leading-none text-muted-foreground/80"
+            title="Зберігається"
+            aria-label="Зберігається"
+          >
+            …
+          </span>
+        )}
+        {saveState === 'saved' && (
+          <span
+            className="pointer-events-none absolute right-1.5 top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-700"
+            title="Збережено"
+            aria-label="Збережено"
+          >
+            <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  const showPhotos = (col.key === 'planned' || col.key === 'completed') && !!onPhotosChange
+
+  function withPhotos(node: ReactNode) {
+    if (!showPhotos) return node
+    return (
+      <div>
+        {node}
+        <FieldPhotos
+          rowId={rowId ?? ''}
+          field={col.key as 'planned' | 'completed'}
+          photos={photos ?? []}
+          canUpload={!!canUploadPhoto}
+          canDelete={!!canDeletePhoto}
+          onChange={onPhotosChange!}
+        />
+      </div>
+    )
+  }
 
   if (plannedAsText) {
-    return (
+    return withPhotos(
       <div className={`min-h-[40px] w-full whitespace-pre-wrap rounded-md border border-sky-200/70 bg-sky-50/50 px-2.5 py-2 text-base leading-snug text-foreground ${minW}`}>
         {value.trim() || '—'}
       </div>
@@ -1539,17 +2073,20 @@ function PlanField({
   }
 
   if (isTextArea) {
-    return (
-      <AutoGrowTextarea
-        value={value}
-        disabled={!canEdit}
-        onChange={onChange}
-        onBlur={v => {
-          if (isAdmin) onBlurAdmin()
-          else onBlurEmployee(v)
-        }}
-        className={`w-full resize-none overflow-hidden rounded-md border px-2.5 py-2 text-base leading-snug disabled:cursor-not-allowed disabled:opacity-100 ${minW} ${fieldTone}`}
-      />
+    return withPhotos(
+      withSaveBadge(
+        <AutoGrowTextarea
+          value={value}
+          disabled={!canEdit}
+          softNumbering={col.key === 'planned' && canEdit}
+          onChange={onChange}
+          onBlur={v => {
+            if (isAdmin) onBlurAdmin()
+            else onBlurEmployee(v)
+          }}
+          className={`w-full resize-none overflow-hidden rounded-md border px-2.5 py-2 text-base leading-snug disabled:cursor-not-allowed disabled:opacity-100 ${minW} ${fieldTone} ${invalidTone} ${padForStatus}`}
+        />
+      )
     )
   }
 
@@ -1562,78 +2099,36 @@ function PlanField({
           </span>
         )
       }
-      return (
+      return withSaveBadge(
         <input
           value={value}
           disabled
           size={Math.max(value.length, 9)}
           readOnly
-          className={`w-auto max-w-none cursor-not-allowed whitespace-nowrap rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5 text-base font-medium text-foreground [field-sizing:content] ${fieldShadow}`}
+          className={`w-auto max-w-none cursor-not-allowed whitespace-nowrap rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5 text-base font-medium text-foreground [field-sizing:content] ${fieldShadow} ${padForStatus}`}
         />
       )
     }
     const shiftChars = Math.max(value.length, 9)
-    return (
+    return withSaveBadge(
       <input
         value={value}
         disabled={!canEdit}
         size={shiftChars}
         onChange={e => onChange(e.target.value)}
         onBlur={() => { if (isAdmin) onBlurAdmin() }}
-        className={`w-auto max-w-none whitespace-nowrap rounded-md border border-border bg-white px-2.5 py-1.5 text-base font-medium disabled:cursor-not-allowed disabled:opacity-100 [field-sizing:content] ${fieldShadow}`}
+        className={`w-auto max-w-none whitespace-nowrap rounded-md border border-border bg-white px-2.5 py-1.5 text-base font-medium disabled:cursor-not-allowed disabled:opacity-100 [field-sizing:content] ${fieldShadow} ${padForStatus}`}
       />
     )
   }
 
-  return (
+  return withSaveBadge(
     <input
       value={value}
       disabled={!canEdit}
       onChange={e => onChange(e.target.value)}
       onBlur={() => { if (isAdmin) onBlurAdmin() }}
-      className={`w-full rounded-md border px-2.5 py-2 text-base disabled:cursor-not-allowed disabled:opacity-100 ${fieldTone} ${minW}`}
-    />
-  )
-}
-
-function AutoGrowTextarea({
-  value,
-  disabled,
-  onChange,
-  onBlur,
-  className,
-}: {
-  value: string
-  disabled?: boolean
-  onChange: (v: string) => void
-  onBlur?: (v: string) => void
-  className?: string
-}) {
-  const ref = useRef<HTMLTextAreaElement>(null)
-
-  const resize = useCallback(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.max(40, el.scrollHeight)}px`
-  }, [])
-
-  useEffect(() => {
-    resize()
-  }, [value, resize])
-
-  return (
-    <textarea
-      ref={ref}
-      value={value}
-      disabled={disabled}
-      rows={1}
-      onChange={e => {
-        onChange(e.target.value)
-        requestAnimationFrame(resize)
-      }}
-      onBlur={e => onBlur?.(e.target.value)}
-      className={className}
+      className={`w-full rounded-md border px-2.5 py-2 text-base disabled:cursor-not-allowed disabled:opacity-100 ${fieldTone} ${minW} ${padForStatus}`}
     />
   )
 }
@@ -1887,122 +2382,6 @@ function SendTasksModal({
           onSend={channels => onSend([...selected], channels)}
         />
       </div>
-    </Modal>
-  )
-}
-
-function DigestModal({
-  open,
-  leaders,
-  busy,
-  pushActiveIds,
-  onClose,
-  onSend,
-}: {
-  open: boolean
-  leaders: Leader[]
-  busy: boolean
-  pushActiveIds: Set<string>
-  onClose: () => void
-  onSend: (ids: string[], channels: SendChannels, content: DigestContent) => void
-}) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [content, setContent] = useState<DigestContent>('full')
-
-  useEffect(() => {
-    if (open) {
-      setSelected(new Set())
-      setContent('full')
-    }
-  }, [open])
-
-  const selectedHasPush = [...selected].some(id => pushActiveIds.has(id))
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="План керівництву"
-      description="Оберіть отримувачів, зміст і спосіб відправки"
-    >
-      {leaders.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Немає отримувачів серед шефів і заступників.</p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          <div>
-            <p className="mb-1.5 text-xs font-semibold text-muted-foreground">Що надіслати</p>
-            <div className="flex flex-wrap gap-1.5">
-              {(
-                [
-                  { id: 'full' as const, label: 'Всю таблицю' },
-                  { id: 'planned' as const, label: 'Тільки завдання' },
-                  { id: 'completed' as const, label: 'Тільки виконано' },
-                ]
-              ).map(opt => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => setContent(opt.id)}
-                  className={`tap-btn rounded-lg px-2.5 py-1.5 text-xs font-semibold ${
-                    content === opt.id
-                      ? 'bg-primary text-primary-foreground'
-                      : 'border border-border bg-white/80 text-foreground'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <SelectAllBar
-            onSelectAll={() => setSelected(new Set(leaders.map(l => l.id)))}
-            onClear={() => setSelected(new Set())}
-          />
-          <ul className="modal-list-scroll max-h-72 space-y-1 pr-1">
-            {leaders.map(l => (
-              <li key={l.id}>
-                <label className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/50">
-                  <input
-                    type="checkbox"
-                    className="mt-1 accent-primary"
-                    checked={selected.has(l.id)}
-                    onChange={e => {
-                      setSelected(prev => {
-                        const next = new Set(prev)
-                        if (e.target.checked) next.add(l.id)
-                        else next.delete(l.id)
-                        return next
-                      })
-                    }}
-                  />
-                  <UserAvatar url={l.avatar_url} name={l.full_name} size={28} className="mt-0.5" />
-                  <span className="min-w-0 flex-1">
-                    <span className="inline-flex items-center gap-1.5 font-medium">
-                      {l.full_name}
-                      <PushStatusBell active={pushActiveIds.has(l.id)} />
-                    </span>
-                    <span className="ml-1 text-[10px] text-muted-foreground">
-                      ({l.role === 'super_admin' ? 'Шеф' : 'Заступник'})
-                    </span>
-                    <span className="block text-xs text-muted-foreground">{l.email || 'без email'}</span>
-                    <ChannelStamps emailAt={l.email_sent_at} pushAt={l.push_sent_at} />
-                  </span>
-                </label>
-              </li>
-            ))}
-          </ul>
-          <p className="text-[11px] text-muted-foreground">
-            Вибрано: {selected.size}
-            {!selectedHasPush && selected.size > 0 ? ' · ніхто з вибраних не має push' : ''}
-          </p>
-          <SendChannelButtons
-            busy={busy}
-            disabled={selected.size === 0}
-            pushDisabled={!selectedHasPush}
-            onSend={channels => onSend([...selected], channels, content)}
-          />
-        </div>
-      )}
     </Modal>
   )
 }

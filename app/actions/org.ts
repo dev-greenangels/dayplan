@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { requireAdmin, requireSuperAdmin, canManageTeam } from '@/lib/auth'
+import { NOTES_DEFAULT_TEMPLATE } from '@/lib/column-templates'
 import type { WorkMode } from '@/lib/types'
 
 export async function listTeams() {
@@ -46,7 +47,14 @@ export async function createTeam(name: string, workMode: WorkMode = 'shared') {
     { team_id: team.id, key: 'shift', label: 'Робоча зміна', sort_order: 10, is_system: true },
     { team_id: team.id, key: 'planned', label: 'Заплановано', sort_order: 20, is_system: true },
     { team_id: team.id, key: 'completed', label: 'Виконано', sort_order: 30, is_system: true },
-    { team_id: team.id, key: 'notes', label: 'Обробки', sort_order: 40, is_system: true },
+    {
+      team_id: team.id,
+      key: 'notes',
+      label: 'Обробки',
+      sort_order: 40,
+      is_system: true,
+      input_template: NOTES_DEFAULT_TEMPLATE,
+    },
   ])
 
   revalidatePath('/admin')
@@ -198,7 +206,7 @@ export async function listTeamColumns(teamId: string) {
   return { columns: data ?? [] }
 }
 
-export async function addTeamColumn(teamId: string, label: string) {
+export async function addTeamColumn(teamId: string, label: string, inputTemplate?: string) {
   const { supabase, profile } = await requireAdmin()
   if (!(await canManageTeam(supabase, profile, teamId))) return { error: 'Немає доступу' }
   const trimmed = label.trim()
@@ -218,6 +226,8 @@ export async function addTeamColumn(teamId: string, label: string) {
     .limit(1)
     .maybeSingle()
 
+  const template = typeof inputTemplate === 'string' ? inputTemplate : ''
+
   const { data, error } = await supabase
     .from('team_columns')
     .insert({
@@ -226,6 +236,7 @@ export async function addTeamColumn(teamId: string, label: string) {
       label: trimmed,
       sort_order: (max?.sort_order ?? 40) + 10,
       is_system: false,
+      input_template: template || null,
     })
     .select()
     .single()
@@ -255,7 +266,7 @@ export async function deleteTeamColumn(columnId: string) {
 
 export async function updateTeamColumn(
   columnId: string,
-  patch: { label?: string; hidden?: boolean }
+  patch: { label?: string; hidden?: boolean; input_template?: string | null }
 ) {
   const { supabase, profile } = await requireAdmin()
   const { data: col } = await supabase
@@ -266,7 +277,7 @@ export async function updateTeamColumn(
   if (!col) return { error: 'Колонку не знайдено' }
   if (!(await canManageTeam(supabase, profile, col.team_id))) return { error: 'Немає доступу' }
 
-  const updates: { label?: string; hidden?: boolean } = {}
+  const updates: { label?: string; hidden?: boolean; input_template?: string | null } = {}
   if (typeof patch.label === 'string') {
     const trimmed = patch.label.trim()
     if (!trimmed) return { error: 'Назва не може бути порожньою' }
@@ -279,6 +290,14 @@ export async function updateTeamColumn(
     }
     updates.hidden = patch.hidden
   }
+  if (patch.input_template !== undefined) {
+    if (col.key === 'shift') {
+      return { error: 'Для зміни шаблон не підтримується' }
+    }
+    const t = patch.input_template
+    updates.input_template = t == null || !String(t).trim() ? null : String(t)
+  }
+  if (Object.keys(updates).length === 0) return { error: 'Немає змін' }
 
   const { error } = await supabase.from('team_columns').update(updates).eq('id', columnId)
   if (error) return { error: error.message }
@@ -308,9 +327,33 @@ export async function reorderTeamColumns(teamId: string, orderedIds: string[]) {
 
 export async function setTeamAdmins(
   teamId: string,
-  admins: { user_id: string; hide_from_plan?: boolean; can_edit_tasks?: boolean }[]
+  admins: {
+    user_id: string
+    hide_from_plan?: boolean
+    can_edit_tasks?: boolean
+    can_access_people?: boolean
+    notify_email?: boolean
+    notify_push?: boolean
+    department_id?: string | null
+  }[]
 ) {
   const { supabase } = await requireSuperAdmin()
+
+  const { data: existingMembers } = await supabase
+    .from('team_members')
+    .select('user_id, department_id')
+    .eq('team_id', teamId)
+  const memberDept = new Map(
+    (existingMembers ?? []).map(m => [m.user_id, m.department_id as string | null])
+  )
+
+  for (const a of admins) {
+    if (a.hide_from_plan) continue
+    const dept = a.department_id || memberDept.get(a.user_id)
+    if (!dept) {
+      return { error: 'Для керівництва в плані оберіть відділ' }
+    }
+  }
 
   await supabase.from('team_admins').delete().eq('team_id', teamId)
   if (admins.length > 0) {
@@ -320,12 +363,32 @@ export async function setTeamAdmins(
         user_id: a.user_id,
         hide_from_plan: !!a.hide_from_plan,
         can_edit_tasks: a.can_edit_tasks !== false,
+        can_access_people: !!a.can_access_people,
+        notify_email: a.notify_email !== false,
+        notify_push: a.notify_push !== false,
       }))
     )
     if (error) return { error: error.message }
   }
+
+  for (const a of admins) {
+    if (a.hide_from_plan) continue
+    const dept = a.department_id || memberDept.get(a.user_id)
+    if (!dept) continue
+    const { error: memErr } = await supabase.from('team_members').upsert(
+      {
+        team_id: teamId,
+        user_id: a.user_id,
+        department_id: dept,
+      },
+      { onConflict: 'team_id,user_id' }
+    )
+    if (memErr) return { error: memErr.message }
+  }
+
   revalidatePath('/admin')
   revalidatePath('/admin/people')
+  revalidatePath(`/teams/${teamId}`)
   return { success: true }
 }
 

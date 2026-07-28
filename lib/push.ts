@@ -31,15 +31,28 @@ async function deleteSubscription(supabase: Supabase, endpoint: string) {
   await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint)
 }
 
+/** Recipients for leadership digest / employee report: only team_admins for this team. */
+export async function getTeamLeadersForNotify(
+  supabase: Supabase,
+  teamId: string
+): Promise<{ user_id: string; notify_email: boolean; notify_push: boolean }[]> {
+  const { data: deputies } = await supabase
+    .from('team_admins')
+    .select('user_id, notify_email, notify_push')
+    .eq('team_id', teamId)
+  const byId = new Map<string, { user_id: string; notify_email: boolean; notify_push: boolean }>()
+  for (const d of deputies ?? []) {
+    byId.set(d.user_id, {
+      user_id: d.user_id,
+      notify_email: d.notify_email !== false,
+      notify_push: d.notify_push !== false,
+    })
+  }
+  return [...byId.values()]
+}
+
 export async function getTeamLeaderUserIds(supabase: Supabase, teamId: string): Promise<string[]> {
-  const [{ data: superAdmins }, { data: deputies }] = await Promise.all([
-    supabase.from('profiles').select('id').eq('role', 'super_admin'),
-    supabase.from('team_admins').select('user_id').eq('team_id', teamId),
-  ])
-  return [...new Set([
-    ...(superAdmins ?? []).map(a => a.id),
-    ...(deputies ?? []).map(d => d.user_id),
-  ])]
+  return (await getTeamLeadersForNotify(supabase, teamId)).map(d => d.user_id)
 }
 
 export async function sendPushToUserIds(

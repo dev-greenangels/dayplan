@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { requireUser, isDeputyOrBoss } from '@/lib/auth'
 import { todayISO } from '@/lib/format-date'
-import type { DayPlan, Profile, TaskRow, Team } from '@/lib/types'
+import type { DayPlan, Profile, TaskRow, Team, TeamColumn } from '@/lib/types'
 import EmployeeDashboard from './employee-dashboard'
 
 type TaskRowWithPlan = TaskRow & { day_plans: DayPlan | null }
@@ -66,6 +66,17 @@ export default async function DashboardPage({ searchParams }: Props) {
     allRows.find(r => r.day_plans?.plan_date === selectedDate) ?? null
   const team = membership?.team as unknown as Pick<Team, 'id' | 'name' | 'work_mode'> | null
 
+  let columns: TeamColumn[] = []
+  const columnsTeamId = team?.id ?? membership?.team_id
+  if (columnsTeamId) {
+    const { data: cols } = await supabase
+      .from('team_columns')
+      .select('id, team_id, key, label, sort_order, is_system, hidden, input_template, created_at')
+      .eq('team_id', columnsTeamId)
+      .order('sort_order')
+    columns = (cols ?? []) as TeamColumn[]
+  }
+
   return (
     <EmployeeDashboard
       profile={profile as Profile}
@@ -75,6 +86,7 @@ export default async function DashboardPage({ searchParams }: Props) {
       teamName={team?.name}
       teamId={team?.id ?? membership?.team_id}
       isToday={selectedDate === today}
+      columns={columns}
     />
   )
 }
