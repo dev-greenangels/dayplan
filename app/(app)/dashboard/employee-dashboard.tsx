@@ -331,7 +331,7 @@ export default function EmployeeDashboard({
         placeholder="Що виконано сьогодні..."
         minHeight={88}
         aria-invalid={reportInvalid}
-        className={`w-full resize-none overflow-hidden rounded-xl border px-4 py-3 pr-8 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70 ${
+        className={`w-full resize-none rounded-xl border px-4 py-3.5 pr-8 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70 ${
           reportInvalid
             ? 'border-red-400 bg-emerald-50 text-emerald-900 ring-1 ring-red-300/80'
             : frozen
@@ -351,8 +351,8 @@ export default function EmployeeDashboard({
         onBlur={() => { void flushSave() }}
         disabled={frozen}
         placeholder="Додаткові обробки (якщо були)..."
-        minHeight={56}
-        className="w-full resize-none overflow-hidden rounded-xl border border-input bg-white/60 px-4 py-3 pr-8 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
+        minHeight={64}
+        className="w-full resize-none rounded-xl border border-input bg-white/60 px-4 py-3.5 pr-8 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
       />
       {fieldBadge('notes')}
     </div>
@@ -521,7 +521,7 @@ export default function EmployeeDashboard({
                       disabled={frozen}
                       placeholder={col.input_template || undefined}
                       minHeight={56}
-                      className="w-full resize-none overflow-hidden rounded-xl border border-input bg-white/60 px-4 py-3 pr-8 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
+                      className="w-full resize-none rounded-xl border border-input bg-white/60 px-4 py-3.5 pr-8 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-70"
                     />
                     {fieldBadge(`extra:${col.key}`)}
                   </div>

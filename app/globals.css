@@ -230,7 +230,8 @@
     .app-main {
       padding-left: 1rem;
       padding-right: 1rem;
-      padding-bottom: calc(1.75rem + env(safe-area-inset-bottom));
+      /* Extra room so focused fields can scroll above keyboard + bottom bars */
+      padding-bottom: calc(6rem + env(safe-area-inset-bottom));
     }
     .glass-card {
       border-radius: 1rem;
@@ -238,6 +239,7 @@
     .plan-page {
       padding-inline: 0.25rem;
       overflow-anchor: none;
+      padding-bottom: calc(5rem + env(safe-area-inset-bottom));
     }
   }
   @keyframes scale-in {

@@ -6,7 +6,7 @@ import {
   ensureEmptyFocusPrefix,
 } from '@/lib/soft-numbering'
 
-const KEYBOARD_GAP = 10
+const KEYBOARD_GAP = 16
 
 function viewportBottom(): number {
   const vv = window.visualViewport
@@ -14,47 +14,49 @@ function viewportBottom(): number {
   return window.innerHeight
 }
 
-function viewportHeight(): number {
-  const vv = window.visualViewport
-  return vv?.height ?? window.innerHeight
+function viewportTop(): number {
+  return window.visualViewport?.offsetTop ?? 0
 }
 
-function applyHeight(el: HTMLTextAreaElement, minHeight: number) {
-  el.style.height = 'auto'
+/** Grow to full content — no internal scroll; keep page scroll stable while height changes. */
+function growToContent(el: HTMLTextAreaElement, minHeight: number) {
+  const scroller = document.scrollingElement || document.documentElement
+  const beforeScroll = scroller.scrollTop
+  const beforeTop = el.getBoundingClientRect().top
+
   el.style.maxHeight = 'none'
-  const natural = Math.max(minHeight, el.scrollHeight)
-  const top = el.getBoundingClientRect().top
-  const room = Math.max(minHeight, viewportBottom() - top - KEYBOARD_GAP)
-  const maxH = Math.max(minHeight, Math.min(room, viewportHeight() - KEYBOARD_GAP))
-  const next = Math.min(natural, maxH)
+  el.style.overflowY = 'hidden'
+  el.style.height = 'auto'
+  const next = Math.max(minHeight, el.scrollHeight)
   el.style.height = `${next}px`
-  el.style.maxHeight = `${maxH}px`
-  el.style.overflowY = natural > maxH + 1 ? 'auto' : 'hidden'
-  return { natural, maxH }
+
+  const afterTop = el.getBoundingClientRect().top
+  const dy = afterTop - beforeTop
+  if (dy !== 0) scroller.scrollTop = beforeScroll + dy
 }
 
-function scrollCaretIntoTextarea(el: HTMLTextAreaElement) {
-  if (el.scrollHeight <= el.clientHeight + 1) return
-  try {
-    const pos = el.selectionEnd
-    const cs = window.getComputedStyle(el)
-    const line =
-      parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4 || 22
-    const padTop = parseFloat(cs.paddingTop) || 0
-    const lineIndex = el.value.slice(0, pos).split('\n').length - 1
-    const caretY = padTop + lineIndex * line
-    const viewTop = el.scrollTop
-    const viewBottom = viewTop + el.clientHeight - line * 1.5
-    if (caretY < viewTop) el.scrollTop = Math.max(0, caretY - line)
-    else if (caretY > viewBottom) el.scrollTop = caretY - el.clientHeight + line * 2
-  } catch {
-    el.scrollTop = el.scrollHeight
+/** Keep the caret / bottom of the field above the soft keyboard. */
+function keepAboveKeyboard(el: HTMLTextAreaElement) {
+  const topLimit = viewportTop() + 8
+  const bottomLimit = viewportBottom() - KEYBOARD_GAP
+  const rect = el.getBoundingClientRect()
+
+  if (rect.bottom > bottomLimit) {
+    window.scrollBy(0, rect.bottom - bottomLimit)
+  } else if (rect.top < topLimit) {
+    window.scrollBy(0, rect.top - topLimit)
+  }
+
+  // If still taller than visible area, pin bottom to keyboard so typing stays visible
+  const rect2 = el.getBoundingClientRect()
+  if (rect2.height > bottomLimit - topLimit && rect2.bottom > bottomLimit) {
+    window.scrollBy(0, rect2.bottom - bottomLimit)
   }
 }
 
 /**
- * Grows downward toward the keyboard. Extra lines push older text upward
- * (off-screen / internal scroll) so the caret stays near the keyboard.
+ * Mobile-friendly textarea: grows with content (everything visible on the page),
+ * preserves scroll on grow, and keeps the focused area above the keyboard.
  */
 export default function AutoGrowTextarea({
   value,
@@ -64,7 +66,7 @@ export default function AutoGrowTextarea({
   onFocus,
   className,
   placeholder,
-  minHeight = 40,
+  minHeight = 44,
   id,
   softNumbering,
   'aria-invalid': ariaInvalid,
@@ -85,34 +87,28 @@ export default function AutoGrowTextarea({
   const focusedRef = useRef(false)
   const rafRef = useRef(0)
 
-  const layout = useCallback(() => {
-    const el = ref.current
-    if (!el) return
+  const layout = useCallback(
+    (opts?: { pinKeyboard?: boolean }) => {
+      const el = ref.current
+      if (!el) return
+      growToContent(el, minHeight)
+      if (opts?.pinKeyboard !== false && focusedRef.current) {
+        keepAboveKeyboard(el)
+      }
+    },
+    [minHeight]
+  )
 
-    applyHeight(el, minHeight)
-
-    if (!focusedRef.current) return
-
-    const bottomLimit = viewportBottom() - KEYBOARD_GAP
-    const delta = el.getBoundingClientRect().bottom - bottomLimit
-    if (Math.abs(delta) > 2) {
-      window.scrollBy(0, delta)
-      // After scroll, more room above keyboard — grow again so bottom stays pinned
-      applyHeight(el, minHeight)
-      const delta2 = el.getBoundingClientRect().bottom - bottomLimit
-      if (Math.abs(delta2) > 2) window.scrollBy(0, delta2)
-    }
-
-    scrollCaretIntoTextarea(el)
-  }, [minHeight])
-
-  const scheduleLayout = useCallback(() => {
-    cancelAnimationFrame(rafRef.current)
-    rafRef.current = requestAnimationFrame(layout)
-  }, [layout])
+  const scheduleLayout = useCallback(
+    (opts?: { pinKeyboard?: boolean }) => {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = requestAnimationFrame(() => layout(opts))
+    },
+    [layout]
+  )
 
   useEffect(() => {
-    layout()
+    layout({ pinKeyboard: focusedRef.current })
   }, [value, layout])
 
   useEffect(() => {
@@ -122,9 +118,11 @@ export default function AutoGrowTextarea({
     const vv = window.visualViewport
     vv?.addEventListener('resize', onVv)
     vv?.addEventListener('scroll', onVv)
+    window.addEventListener('orientationchange', onVv)
     return () => {
       vv?.removeEventListener('resize', onVv)
       vv?.removeEventListener('scroll', onVv)
+      window.removeEventListener('orientationchange', onVv)
       cancelAnimationFrame(rafRef.current)
     }
   }, [scheduleLayout])
@@ -147,10 +145,14 @@ export default function AutoGrowTextarea({
       placeholder={placeholder}
       aria-invalid={ariaInvalid}
       rows={1}
+      enterKeyHint={softNumbering ? 'enter' : 'done'}
+      autoCapitalize="sentences"
+      autoCorrect="on"
       onChange={e => {
         onChange(e.target.value)
-        layout()
+        scheduleLayout()
       }}
+      onInput={() => scheduleLayout()}
       onKeyDown={e => {
         if (!softNumbering || disabled) return
         if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return
@@ -166,13 +168,7 @@ export default function AutoGrowTextarea({
       }}
       onBlur={e => {
         focusedRef.current = false
-        const el = ref.current
-        if (el) {
-          el.style.maxHeight = ''
-          el.style.height = 'auto'
-          el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`
-          el.style.overflowY = 'hidden'
-        }
+        growToContent(e.currentTarget, minHeight)
         onBlur?.(e.target.value)
       }}
       onFocus={e => {
@@ -182,12 +178,17 @@ export default function AutoGrowTextarea({
           if (starter) {
             onChange(starter)
             setCaret(starter.length)
+            return
           }
         }
         onFocus?.()
+        // Delay so iOS keyboard / visualViewport settle
         scheduleLayout()
+        window.setTimeout(() => scheduleLayout(), 50)
+        window.setTimeout(() => scheduleLayout(), 300)
       }}
-      className={`${className ?? ''} [overflow-anchor:none]`}
+      className={`${className ?? ''} touch-manipulation [overflow-anchor:none]`}
+      style={{ overflowY: 'hidden', maxHeight: 'none' }}
     />
   )
 }

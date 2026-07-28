@@ -1429,7 +1429,7 @@ export default function TeamPlanBoard({
                           }
                         />
                       </div>
-                      <div className="flex flex-col gap-3">
+                      <div className="flex flex-col gap-3.5">
                         {visibleCols.map(c => {
                           const val = cellValue(row, c)
                           if (c.key === 'shift') {
@@ -2094,7 +2094,7 @@ function PlanField({
             if (isAdmin) onBlurAdmin()
             else onBlurEmployee(v)
           }}
-          className={`w-full resize-none overflow-hidden rounded-md border px-2.5 py-2 text-base leading-snug disabled:cursor-not-allowed disabled:opacity-100 ${minW} ${fieldTone} ${invalidTone} ${padForStatus}`}
+          className={`w-full resize-none rounded-md border px-2.5 py-2.5 text-base leading-relaxed disabled:cursor-not-allowed disabled:opacity-100 sm:py-2 sm:leading-snug ${minW} ${fieldTone} ${invalidTone} ${padForStatus}`}
         />
       )
     )
@@ -2115,7 +2115,7 @@ function PlanField({
           disabled
           size={Math.max(value.length, 9)}
           readOnly
-          className={`w-auto max-w-none cursor-not-allowed whitespace-nowrap rounded-md border border-border/40 bg-muted/20 px-2.5 py-1.5 text-base font-medium text-foreground [field-sizing:content] ${fieldShadow} ${padForStatus}`}
+          className={`w-auto max-w-none cursor-not-allowed whitespace-nowrap rounded-md border border-border/40 bg-muted/20 px-2.5 py-2 text-base font-medium text-foreground [field-sizing:content] ${fieldShadow} ${padForStatus}`}
         />
       )
     }
@@ -2127,7 +2127,7 @@ function PlanField({
         size={shiftChars}
         onChange={e => onChange(e.target.value)}
         onBlur={() => { if (isAdmin) onBlurAdmin() }}
-        className={`w-auto max-w-none whitespace-nowrap rounded-md border border-border bg-white px-2.5 py-1.5 text-base font-medium disabled:cursor-not-allowed disabled:opacity-100 [field-sizing:content] ${fieldShadow} ${padForStatus}`}
+        className={`w-auto max-w-none whitespace-nowrap rounded-md border border-border bg-white px-2.5 py-2 text-base font-medium disabled:cursor-not-allowed disabled:opacity-100 [field-sizing:content] ${fieldShadow} ${padForStatus}`}
       />
     )
   }
@@ -2138,7 +2138,7 @@ function PlanField({
       disabled={!canEdit}
       onChange={e => onChange(e.target.value)}
       onBlur={() => { if (isAdmin) onBlurAdmin() }}
-      className={`w-full rounded-md border px-2.5 py-2 text-base disabled:cursor-not-allowed disabled:opacity-100 ${fieldTone} ${minW} ${padForStatus}`}
+      className={`w-full rounded-md border px-2.5 py-2.5 text-base disabled:cursor-not-allowed disabled:opacity-100 sm:py-2 ${fieldTone} ${minW} ${padForStatus}`}
     />
   )
 }
