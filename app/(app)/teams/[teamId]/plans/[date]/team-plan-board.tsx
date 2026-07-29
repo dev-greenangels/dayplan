@@ -517,8 +517,7 @@ export default function TeamPlanBoard({
   const myCompletedOk = !!(myRow && isFilledBeyondTemplate(myRow.completed, completedTemplate))
   const myRowFrozen = !!(myRow && isRowFrozen(myRow))
 
-  function assertSharedCompletedFilled(): boolean {
-    if (!isSharedPc) return true
+  function assertAllCompletedFilled(): boolean {
     if (localRows.length === 0) {
       toast.error('Немає рядків у плані')
       return false
@@ -530,7 +529,7 @@ export default function TeamPlanBoard({
   }
 
   function trySendLeadershipDigest() {
-    if (!assertSharedCompletedFilled()) return
+    if (!assertAllCompletedFilled()) return
     void sendLeadershipDigest()
   }
 
@@ -774,7 +773,7 @@ export default function TeamPlanBoard({
 
   async function sendLeadershipDigest() {
     if ((!hasAnyPlanned && !hasAnyCompleted) && localRows.length === 0) return
-    if (!assertSharedCompletedFilled()) return
+    if (!assertAllCompletedFilled()) return
     setDigestSending(true)
     setMsg(null)
     try {
@@ -802,7 +801,7 @@ export default function TeamPlanBoard({
         const parts: string[] = []
         if (json.emailSent) parts.push(`email: ${json.emailSent}`)
         if (json.pushSent) parts.push(`push: ${json.pushSent}`)
-        setMsg(parts.length ? `План керівництву (${parts.join(', ')})` : 'План надіслано керівництву')
+        setMsg(parts.length ? `Звіт керівництву (${parts.join(', ')})` : 'Звіт надіслано керівництву')
         router.refresh()
       }
     } catch {
@@ -812,26 +811,32 @@ export default function TeamPlanBoard({
   }
 
   async function sendEmployeeLeadershipReport() {
-    if (myRowFrozen) {
-      toast.error('Звіт за минулий день уже відправлено — редагування та повторна відправка заборонені')
-      return
-    }
     setEmployeeReportBusy(true)
     setMsg(null)
     try {
-      if (!assertSharedCompletedFilled()) {
-        setEmployeeReportBusy(false)
-        return
-      }
-      if (!myRow || !myCompletedOk) {
-        setCompletedInvalidIds(new Set(myRow ? [myRow.employee_id] : []))
-        toast.error('Заповніть поле «Виконано» перед відправкою')
-        setEmployeeReportBusy(false)
-        return
-      }
-      if (isAdmin) await flushSave()
-      else if (myRow?.id) {
-        await commitEmployeeRow(myRow)
+      if (isAdmin) {
+        // Leader: validate all rows, flush save first
+        if (!assertAllCompletedFilled()) {
+          setEmployeeReportBusy(false)
+          return
+        }
+        await flushSave()
+      } else {
+        // Employee: validate only own row
+        if (myRowFrozen) {
+          toast.error('Звіт за минулий день уже відправлено — редагування та повторна відправка заборонені')
+          setEmployeeReportBusy(false)
+          return
+        }
+        if (!myRow || !myCompletedOk) {
+          setCompletedInvalidIds(new Set(myRow ? [myRow.employee_id] : []))
+          toast.error('Заповніть поле «Виконано» перед відправкою')
+          setEmployeeReportBusy(false)
+          return
+        }
+        if (myRow?.id) {
+          await commitEmployeeRow(myRow)
+        }
       }
       const res = await fetch('/api/send-employee-leadership-report', {
         method: 'POST',
@@ -850,7 +855,7 @@ export default function TeamPlanBoard({
         setEmployeeReportSentAt(sentAt)
         setLocalRows(prev =>
           prev.map(r =>
-            isSharedPc || r.employee_id === currentUserId
+            (json.isLeader || r.employee_id === currentUserId)
               ? { ...r, report_sent_at: sentAt }
               : r
           )
@@ -1084,8 +1089,8 @@ export default function TeamPlanBoard({
                   {digestSending
                     ? '...'
                     : digestSentAt
-                      ? 'План керівництву ✓'
-                      : 'План керівництву'}
+                      ? 'Звіт керівництву ✓'
+                      : 'Звіт керівництву'}
                 </span>
                 <span className={`mt-0.5 text-[10px] font-normal ${digestSentAt ? 'text-green-700/80' : 'invisible'}`}>
                   {digestSentAt ? formatUkDateTime(digestSentAt) : '00.00.0000 00:00'}
@@ -1757,7 +1762,7 @@ export default function TeamPlanBoard({
                 className={`tap-btn flex flex-1 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-[10px] font-semibold disabled:opacity-40 ${
                   digestSentAt ? 'text-green-700' : 'text-primary'
                 }`}
-                title="План керівництву"
+                title="Звіт керівництву"
               >
                 <span className={`relative flex h-9 w-9 items-center justify-center rounded-full shadow-sm ${
                   digestSentAt ? 'bg-green-100 text-green-800' : 'bg-primary/15 text-primary'
@@ -1767,7 +1772,7 @@ export default function TeamPlanBoard({
                     <span className="absolute -right-0.5 -top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-green-600 text-[8px] text-white">✓</span>
                   )}
                 </span>
-                Керівництву
+                Звіт
               </button>
             )}
             <button

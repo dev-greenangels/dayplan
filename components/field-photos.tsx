@@ -26,17 +26,23 @@ export default function FieldPhotos({
   canDelete: boolean
   onChange: (next: TaskRowPhoto[]) => void
 }) {
-  const inputRef = useRef<HTMLInputElement>(null)
+  const cameraRef = useRef<HTMLInputElement>(null)
+  const galleryRef = useRef<HTMLInputElement>(null)
   const toast = useToast()
   const [pending, startTransition] = useTransition()
   const [lightbox, setLightbox] = useState<{ id: string; url: string } | null>(null)
   const [loadingFull, setLoadingFull] = useState(false)
+  const [sourceMenu, setSourceMenu] = useState(false)
 
   const atLimit = photos.length >= 3
 
-  function pickFile() {
-    if (!canUpload || atLimit || pending || !rowId) return
-    inputRef.current?.click()
+  function pickCamera() {
+    setSourceMenu(false)
+    cameraRef.current?.click()
+  }
+  function pickGallery() {
+    setSourceMenu(false)
+    galleryRef.current?.click()
   }
 
   function onFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -49,8 +55,8 @@ export default function FieldPhotos({
         const fd = new FormData()
         fd.set('rowId', rowId)
         fd.set('field', field)
-        fd.set('full', new File([compressed.full], 'full.webp', { type: 'image/webp' }))
-        fd.set('thumb', new File([compressed.thumb], 'thumb.webp', { type: 'image/webp' }))
+        fd.set('full', new File([compressed.full], 'full.webp', { type: compressed.full.type || 'image/webp' }))
+        fd.set('thumb', new File([compressed.thumb], 'thumb.webp', { type: compressed.thumb.type || 'image/webp' }))
         const res = await uploadTaskPhoto(fd)
         if (res.error || !res.photo) {
           toast.error(res.error ?? 'Помилка завантаження')
@@ -116,12 +122,12 @@ export default function FieldPhotos({
         </button>
       ))}
       {canUpload && (
-        <>
+        <div className="relative ml-auto">
           <button
             type="button"
             disabled={atLimit || pending || !rowId}
-            onClick={pickFile}
-            className={`tap-btn ml-auto inline-flex h-11 items-center gap-1 rounded-md border border-dashed px-2.5 text-[11px] font-semibold disabled:opacity-40 ${addTone}`}
+            onClick={() => setSourceMenu(v => !v)}
+            className={`tap-btn inline-flex h-11 items-center gap-1 rounded-md border border-dashed px-2.5 text-[11px] font-semibold disabled:opacity-40 ${addTone}`}
             title={atLimit ? 'Максимум 3 фото' : !rowId ? 'Спочатку збережіть рядок' : 'Додати фото'}
           >
             <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -129,15 +135,44 @@ export default function FieldPhotos({
             </svg>
             Фото
           </button>
+          {sourceMenu && (
+            <>
+              {/* backdrop */}
+              <div className="fixed inset-0 z-40" onClick={() => setSourceMenu(false)} />
+              <div className="absolute right-0 bottom-full z-50 mb-1 flex min-w-[150px] flex-col overflow-hidden rounded-lg border border-border bg-white shadow-lg">
+                <button
+                  type="button"
+                  onClick={pickCamera}
+                  className="tap-btn px-3 py-2.5 text-left text-xs font-medium hover:bg-muted/50"
+                >
+                  📷 Камера
+                </button>
+                <button
+                  type="button"
+                  onClick={pickGallery}
+                  className="tap-btn px-3 py-2.5 text-left text-xs font-medium hover:bg-muted/50"
+                >
+                  🖼 З галереї
+                </button>
+              </div>
+            </>
+          )}
           <input
-            ref={inputRef}
+            ref={cameraRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/*"
+            accept="image/*"
             capture="environment"
             className="hidden"
             onChange={onFile}
           />
-        </>
+          <input
+            ref={galleryRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/*"
+            className="hidden"
+            onChange={onFile}
+          />
+        </div>
       )}
 
       <Modal

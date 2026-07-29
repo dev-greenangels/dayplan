@@ -44,8 +44,9 @@ export async function uploadTaskPhoto(formData: FormData) {
   if (!(full instanceof File) || !(thumb instanceof File)) {
     return { error: 'Файл відсутній' }
   }
-  if (full.type !== 'image/webp' || thumb.type !== 'image/webp') {
-    return { error: 'Очікується WebP' }
+  const ALLOWED_TYPES = ['image/webp', 'image/jpeg']
+  if (!ALLOWED_TYPES.includes(full.type) || !ALLOWED_TYPES.includes(thumb.type)) {
+    return { error: 'Очікується WebP або JPEG' }
   }
 
   const loaded = await loadRowContext(rowId)

@@ -11,6 +11,8 @@ const FULL_MAX_HEIGHT = 1000
 const THUMB_MAX_EDGE = 180
 const FULL_QUALITY = 0.72
 const THUMB_QUALITY = 0.65
+/** Keep full+thumb safely under Server Action limit (multipart overhead ~20 KB) */
+const MAX_TOTAL_BYTES = 850_000
 
 function loadImage(file: File): Promise<HTMLImageElement | ImageBitmap> {
   if (typeof createImageBitmap === 'function') {
@@ -54,17 +56,25 @@ function drawScaled(
   return { canvas, width, height }
 }
 
-function canvasToWebp(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+function canvasToBlob(canvas: HTMLCanvasElement, mime: string, quality: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       blob => {
         if (!blob) reject(new Error('Не вдалося стиснути зображення'))
         else resolve(blob)
       },
-      'image/webp',
+      mime,
       quality
     )
   })
+}
+
+async function canvasToWebp(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+  const blob = await canvasToBlob(canvas, 'image/webp', quality)
+  if (blob.type === 'image/webp') return blob
+  // Safari fallback: try JPEG if WebP unsupported
+  const jpeg = await canvasToBlob(canvas, 'image/jpeg', quality)
+  return jpeg
 }
 
 export async function compressTaskPhoto(file: File): Promise<CompressedPhoto> {
@@ -75,10 +85,23 @@ export async function compressTaskPhoto(file: File): Promise<CompressedPhoto> {
   try {
     const full = drawScaled(source, FULL_MAX_HEIGHT * 2, FULL_MAX_HEIGHT)
     const thumb = drawScaled(source, THUMB_MAX_EDGE, THUMB_MAX_EDGE)
-    const [fullBlob, thumbBlob] = await Promise.all([
-      canvasToWebp(full.canvas, FULL_QUALITY),
-      canvasToWebp(thumb.canvas, THUMB_QUALITY),
-    ])
+
+    let quality = FULL_QUALITY
+    let fullBlob = await canvasToWebp(full.canvas, quality)
+    const thumbBlob = await canvasToWebp(thumb.canvas, THUMB_QUALITY)
+
+    // Adaptive: reduce quality until combined size fits
+    let attempts = 0
+    while (fullBlob.size + thumbBlob.size > MAX_TOTAL_BYTES && quality > 0.30 && attempts < 5) {
+      quality -= 0.10
+      fullBlob = await canvasToWebp(full.canvas, quality)
+      attempts++
+    }
+
+    if (fullBlob.size + thumbBlob.size > MAX_TOTAL_BYTES * 3) {
+      throw new Error('Зображення занадто велике навіть після стиснення')
+    }
+
     return {
       full: fullBlob,
       thumb: thumbBlob,

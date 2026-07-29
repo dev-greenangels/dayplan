@@ -205,7 +205,7 @@ export async function POST(req: NextRequest) {
         const plannedCount = (rows ?? []).filter(r => (r.planned || '').trim()).length
         const body = `Команда «${team?.name ?? ''}»: ${contentTitle.toLowerCase()} · ${plannedCount} рядків · ${dateStr}`
         pushSent = await sendPushToUserIds(supabase, recipientUserIds, {
-          title: 'План керівництву',
+          title: 'Звіт керівництву',
           body: body.slice(0, 120),
           url: `/teams/${teamId}/plans/${date}`,
         })
