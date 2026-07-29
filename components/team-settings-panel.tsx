@@ -32,6 +32,7 @@ interface TeamAdminRow {
   user_id: string
   hide_from_plan?: boolean
   can_edit_tasks?: boolean
+  can_add_photos?: boolean
   can_access_people?: boolean
   notify_email?: boolean
   notify_push?: boolean
@@ -92,7 +93,7 @@ export default function TeamSettingsPanel({
   const adminsForTeam = teamAdmins.filter(a => a.team_id === activeTeamId)
   const adminIds = adminsForTeam.map(a => a.user_id)
   const membersForTeam = memberDepartments.filter(m => m.team_id === activeTeamId)
-  const adminsKey = `${activeTeamId}:${[...adminIds].sort().join(',')}:${adminsForTeam.map(a => `${a.user_id}:${a.hide_from_plan}:${a.can_edit_tasks !== false}:${!!a.can_access_people}:${a.notify_email !== false}:${a.notify_push !== false}`).join('|')}:${membersForTeam.map(m => `${m.user_id}:${m.department_id}`).join('|')}`
+  const adminsKey = `${activeTeamId}:${[...adminIds].sort().join(',')}:${adminsForTeam.map(a => `${a.user_id}:${a.hide_from_plan}:${a.can_edit_tasks !== false}:${a.can_add_photos !== false}:${!!a.can_access_people}:${a.notify_email !== false}:${a.notify_push !== false}`).join('|')}:${membersForTeam.map(m => `${m.user_id}:${m.department_id}`).join('|')}`
   const hideMap = useMemo(() => {
     const m = new Map<string, boolean>()
     for (const a of adminsForTeam) m.set(a.user_id, !!a.hide_from_plan)
@@ -101,6 +102,11 @@ export default function TeamSettingsPanel({
   const editTasksMap = useMemo(() => {
     const m = new Map<string, boolean>()
     for (const a of adminsForTeam) m.set(a.user_id, a.can_edit_tasks !== false)
+    return m
+  }, [adminsForTeam])
+  const addPhotosMap = useMemo(() => {
+    const m = new Map<string, boolean>()
+    for (const a of adminsForTeam) m.set(a.user_id, a.can_add_photos !== false)
     return m
   }, [adminsForTeam])
   const peopleAccessMap = useMemo(() => {
@@ -138,6 +144,11 @@ export default function TeamSettingsPanel({
     for (const a of adminsForTeam) o[a.user_id] = a.can_edit_tasks !== false
     return o
   })
+  const [canAddPhotos, setCanAddPhotos] = useState<Record<string, boolean>>(() => {
+    const o: Record<string, boolean> = {}
+    for (const a of adminsForTeam) o[a.user_id] = a.can_add_photos !== false
+    return o
+  })
   const [canAccessPeople, setCanAccessPeople] = useState<Record<string, boolean>>(() => {
     const o: Record<string, boolean> = {}
     for (const a of adminsForTeam) o[a.user_id] = !!a.can_access_people
@@ -173,6 +184,7 @@ export default function TeamSettingsPanel({
     setCheckedAdmins(new Set(adminIds))
     const hide: Record<string, boolean> = {}
     const edit: Record<string, boolean> = {}
+    const photos: Record<string, boolean> = {}
     const people: Record<string, boolean> = {}
     const email: Record<string, boolean> = {}
     const push: Record<string, boolean> = {}
@@ -180,6 +192,7 @@ export default function TeamSettingsPanel({
     for (const a of adminsForTeam) {
       hide[a.user_id] = !!a.hide_from_plan
       edit[a.user_id] = a.can_edit_tasks !== false
+      photos[a.user_id] = a.can_add_photos !== false
       people[a.user_id] = !!a.can_access_people
       email[a.user_id] = a.notify_email !== false
       push[a.user_id] = a.notify_push !== false
@@ -188,6 +201,7 @@ export default function TeamSettingsPanel({
     }
     setHideFromPlan(hide)
     setCanEditTasks(edit)
+    setCanAddPhotos(photos)
     setCanAccessPeople(people)
     setNotifyEmail(email)
     setNotifyPush(push)
@@ -216,6 +230,7 @@ export default function TeamSettingsPanel({
       if (!checkedAdmins.has(id)) return true
       if (!!hideMap.get(id) !== !!hideFromPlan[id]) return true
       if (!!editTasksMap.get(id) !== (canEditTasks[id] !== false)) return true
+      if (!!addPhotosMap.get(id) !== (canAddPhotos[id] !== false)) return true
       if (!!peopleAccessMap.get(id) !== !!canAccessPeople[id]) return true
       if (!!notifyEmailMap.get(id) !== (notifyEmail[id] !== false)) return true
       if (!!notifyPushMap.get(id) !== (notifyPush[id] !== false)) return true
@@ -225,7 +240,7 @@ export default function TeamSettingsPanel({
       if (!adminIds.includes(id)) return true
     }
     return false
-  }, [checkedAdmins, adminIds, hideFromPlan, hideMap, canEditTasks, editTasksMap, canAccessPeople, peopleAccessMap, notifyEmail, notifyEmailMap, notifyPush, notifyPushMap, leaderDept, deptMap])
+  }, [checkedAdmins, adminIds, hideFromPlan, hideMap, canEditTasks, editTasksMap, canAddPhotos, addPhotosMap, canAccessPeople, peopleAccessMap, notifyEmail, notifyEmailMap, notifyPush, notifyPushMap, leaderDept, deptMap])
 
   const teamDirty = !!team && (
     name.trim() !== team.name ||
@@ -650,6 +665,15 @@ export default function TeamSettingsPanel({
                             />
                             Може редагувати завдання
                           </label>
+                          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <input
+                              type="checkbox"
+                              checked={canAddPhotos[d.id] !== false}
+                              onChange={e => setCanAddPhotos(prev => ({ ...prev, [d.id]: e.target.checked }))}
+                              className="accent-primary"
+                            />
+                            Може додавати фото
+                          </label>
                           {d.role === 'sub_admin' && (
                             <label className="flex items-center gap-2 text-xs text-muted-foreground">
                               <input
@@ -691,6 +715,7 @@ export default function TeamSettingsPanel({
                     user_id,
                     hide_from_plan: !!hideFromPlan[user_id],
                     can_edit_tasks: canEditTasks[user_id] !== false,
+                    can_add_photos: canAddPhotos[user_id] !== false,
                     can_access_people: !!canAccessPeople[user_id],
                     notify_email: notifyEmail[user_id] !== false,
                     notify_push: notifyPush[user_id] !== false,

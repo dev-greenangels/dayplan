@@ -331,6 +331,7 @@ export async function setTeamAdmins(
     user_id: string
     hide_from_plan?: boolean
     can_edit_tasks?: boolean
+    can_add_photos?: boolean
     can_access_people?: boolean
     notify_email?: boolean
     notify_push?: boolean
@@ -363,6 +364,7 @@ export async function setTeamAdmins(
         user_id: a.user_id,
         hide_from_plan: !!a.hide_from_plan,
         can_edit_tasks: a.can_edit_tasks !== false,
+        can_add_photos: a.can_add_photos !== false,
         can_access_people: !!a.can_access_people,
         notify_email: a.notify_email !== false,
         notify_push: a.notify_push !== false,

@@ -1,7 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { getSessionProfile, canManageTeam } from '@/lib/auth'
+import { getSessionProfile, canManageTeam, getTeamAccess } from '@/lib/auth'
 import type { TaskPhotoField, TaskRowPhoto } from '@/lib/types'
 
 const MAX_PHOTOS = 3
@@ -55,6 +55,14 @@ export async function uploadTaskPhoto(formData: FormData) {
   // Employees cannot upload to planned (admin-only field)
   if (field === 'planned' && !isAdmin) {
     return { error: 'Немає доступу' }
+  }
+
+  // Leadership may view photos always; upload gated by can_add_photos
+  if (isAdmin) {
+    const access = await getTeamAccess(ctx.supabase, ctx.profile, plan.team_id)
+    if (!access.canAddPhotos) {
+      return { error: 'Додавання фото вимкнено для вашого доступу' }
+    }
   }
 
   const { count } = await ctx.supabase

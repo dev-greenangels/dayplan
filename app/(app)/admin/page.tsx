@@ -32,7 +32,7 @@ export default async function AdminHomePage() {
     teamIds.length
       ? supabase
           .from('team_admins')
-          .select('team_id, user_id, hide_from_plan, can_edit_tasks, can_access_people, notify_email, notify_push')
+          .select('team_id, user_id, hide_from_plan, can_edit_tasks, can_add_photos, can_access_people, notify_email, notify_push')
           .in('team_id', teamIds)
       : Promise.resolve({ data: [] }),
     supabase

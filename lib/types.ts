@@ -84,6 +84,8 @@ export interface TeamAdmin {
   user_id: string
   hide_from_plan?: boolean
   can_edit_tasks?: boolean
+  /** May upload photos on the plan (still sees existing photos if false) */
+  can_add_photos?: boolean
   /** Deputy may open /admin/people (super_admin always can) */
   can_access_people?: boolean
   /** Receive leadership digest/report email for this team (default true) */

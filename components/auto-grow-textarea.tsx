@@ -8,6 +8,12 @@ import {
 
 const FOCUS_MAX_RATIO = 0.5
 
+/** Plan table is xl+; mobile keyboard UX must not run there. */
+function isDesktopPlanLayout() {
+  if (typeof window === 'undefined') return false
+  return window.matchMedia('(min-width: 1280px)').matches
+}
+
 function vvHeight(): number {
   return window.visualViewport?.height ?? window.innerHeight
 }
@@ -21,7 +27,7 @@ function focusMaxHeight(minHeight: number) {
 }
 
 /**
- * Blurred: full text on the page.
+ * Blurred / desktop: full text on the page.
  * height:0 probe fixes iOS scrollHeight after a focused constrained box.
  */
 function expandFull(el: HTMLTextAreaElement, minHeight: number) {
@@ -42,7 +48,7 @@ function expandFull(el: HTMLTextAreaElement, minHeight: number) {
 }
 
 /**
- * Lock focused box once (on focus / keyboard resize only).
+ * Mobile focused: lock box once (on focus / keyboard resize only).
  */
 function lockFocusedBox(el: HTMLTextAreaElement, minHeight: number) {
   const maxH = focusMaxHeight(minHeight)
@@ -58,8 +64,7 @@ function lockFocusedBox(el: HTMLTextAreaElement, minHeight: number) {
 }
 
 /**
- * While typing: only GROW height up to max — never shrink, never height:auto.
- * Shrinking / remeasure was the mid-keystroke jerk.
+ * Mobile typing: only GROW height up to max — never shrink, never height:auto.
  */
 function growFocusedIfNeeded(
   el: HTMLTextAreaElement,
@@ -74,6 +79,19 @@ function growFocusedIfNeeded(
     el.style.height = `${Math.min(content, maxH)}px`
   }
   el.style.overflowY = content > maxH + 1 ? 'auto' : 'hidden'
+}
+
+/** Desktop: grow freely with content, no max cap, no page scroll. */
+function growDesktop(el: HTMLTextAreaElement, minHeight: number) {
+  const s = scroller()
+  const y0 = s.scrollTop
+  const top0 = el.getBoundingClientRect().top
+  el.style.maxHeight = 'none'
+  el.style.overflowY = 'hidden'
+  el.style.height = 'auto'
+  el.style.height = `${Math.max(minHeight, el.scrollHeight)}px`
+  const dy = el.getBoundingClientRect().top - top0
+  if (dy) s.scrollTop = y0 + dy
 }
 
 function lineHeightPx(el: HTMLTextAreaElement) {
@@ -91,10 +109,6 @@ function scrollPosIntoView(el: HTMLTextAreaElement, pos: number) {
   const viewBottom = viewTop + el.clientHeight - line * 1.2
   if (caretY > viewBottom) el.scrollTop = caretY - el.clientHeight + line * 2
   else if (caretY < viewTop + line * 0.4) el.scrollTop = Math.max(0, caretY - line)
-}
-
-function scrollToEnd(el: HTMLTextAreaElement) {
-  el.scrollTop = el.scrollHeight
 }
 
 function placeOnce(el: HTMLTextAreaElement) {
@@ -134,6 +148,7 @@ export default function AutoGrowTextarea({
 }) {
   const ref = useRef<HTMLTextAreaElement>(null)
   const focusedRef = useRef(false)
+  const mobileRef = useRef(false)
   const rafRef = useRef(0)
   const focusTimerRef = useRef(0)
   const blurTimerRef = useRef(0)
@@ -148,10 +163,10 @@ export default function AutoGrowTextarea({
     expandFull(el, minHeight)
   }, [minHeight])
 
-  /** Only scroll inside — never touch height while typing. */
+  /** Mobile only: scroll inside the locked box. */
   const syncCaretOnly = useCallback(() => {
     const el = ref.current
-    if (!el || !focusedRef.current) return
+    if (!el || !focusedRef.current || !mobileRef.current) return
     if (el.scrollHeight <= el.clientHeight + 1) return
     const pos = el.selectionEnd ?? el.value.length
     if (preferEndRef.current || pos >= el.value.length - 1) {
@@ -163,22 +178,22 @@ export default function AutoGrowTextarea({
   }, [])
 
   useEffect(() => {
-    if (focusedRef.current) {
-      // Typing: caret only. Do NOT relock height (that jerks).
+    if (focusedRef.current && mobileRef.current) {
       cancelAnimationFrame(rafRef.current)
       rafRef.current = requestAnimationFrame(syncCaretOnly)
-    } else {
+    } else if (!focusedRef.current) {
       syncIdle()
+    } else if (focusedRef.current && !mobileRef.current && ref.current) {
+      growDesktop(ref.current, minHeight)
     }
-  }, [value, syncCaretOnly, syncIdle])
+  }, [value, syncCaretOnly, syncIdle, minHeight])
 
   useEffect(() => {
     const onVvResize = () => {
-      if (!focusedRef.current || !ref.current) return
+      if (!focusedRef.current || !ref.current || !mobileRef.current) return
       const h = vvHeight()
       if (Math.abs(h - lastVvHRef.current) < 60) return
       lastVvHRef.current = h
-      // Keyboard open/close only — relock once
       lockedMaxRef.current = lockFocusedBox(ref.current, minHeight)
       syncCaretOnly()
       if (!placedRef.current) {
@@ -202,7 +217,7 @@ export default function AutoGrowTextarea({
     requestAnimationFrame(() => {
       el.setSelectionRange(pos, pos)
       preferEndRef.current = pos >= el.value.length - 1
-      syncCaretOnly()
+      if (mobileRef.current) syncCaretOnly()
     })
   }
 
@@ -226,12 +241,15 @@ export default function AutoGrowTextarea({
         preferEndRef.current =
           (e.target.selectionEnd ?? 0) >= e.target.value.length - 1
         const el = e.target
-        const maxH = lockedMaxRef.current || focusMaxHeight(minHeight)
-        lockedMaxRef.current = maxH
-        // Grow-only + caret — no remeasure/shrink
-        growFocusedIfNeeded(el, maxH, minHeight)
-        cancelAnimationFrame(rafRef.current)
-        rafRef.current = requestAnimationFrame(syncCaretOnly)
+        if (mobileRef.current && focusedRef.current) {
+          const maxH = lockedMaxRef.current || focusMaxHeight(minHeight)
+          lockedMaxRef.current = maxH
+          growFocusedIfNeeded(el, maxH, minHeight)
+          cancelAnimationFrame(rafRef.current)
+          rafRef.current = requestAnimationFrame(syncCaretOnly)
+        } else {
+          growDesktop(el, minHeight)
+        }
       }}
       onKeyDown={e => {
         if (!softNumbering || disabled) return
@@ -256,17 +274,19 @@ export default function AutoGrowTextarea({
         document.documentElement.classList.remove('dp-field-focused')
         const el = e.currentTarget
         expandFull(el, minHeight)
-        window.clearTimeout(blurTimerRef.current)
-        blurTimerRef.current = window.setTimeout(() => {
-          if (!focusedRef.current) expandFull(el, minHeight)
-        }, 80)
+        if (mobileRef.current) {
+          window.clearTimeout(blurTimerRef.current)
+          blurTimerRef.current = window.setTimeout(() => {
+            if (!focusedRef.current) expandFull(el, minHeight)
+          }, 80)
+        }
         onBlur?.(e.target.value)
       }}
       onFocus={e => {
         focusedRef.current = true
         placedRef.current = false
+        mobileRef.current = !isDesktopPlanLayout()
         lastVvHRef.current = vvHeight()
-        document.documentElement.classList.add('dp-field-focused')
 
         const el = e.currentTarget
         const wasEmpty = el.value.trim() === ''
@@ -276,18 +296,25 @@ export default function AutoGrowTextarea({
           if (starter) {
             preferEndRef.current = true
             onChange(starter)
-            lockedMaxRef.current = lockFocusedBox(el, minHeight)
+            if (mobileRef.current) {
+              document.documentElement.classList.add('dp-field-focused')
+              lockedMaxRef.current = lockFocusedBox(el, minHeight)
+            } else {
+              growDesktop(el, minHeight)
+            }
             setCaret(starter.length)
             onFocus?.()
-            window.clearTimeout(focusTimerRef.current)
-            focusTimerRef.current = window.setTimeout(() => {
-              if (!focusedRef.current || !ref.current) return
-              lastVvHRef.current = vvHeight()
-              lockedMaxRef.current = lockFocusedBox(ref.current, minHeight)
-              syncCaretOnly()
-              placeOnce(ref.current)
-              placedRef.current = true
-            }, 350)
+            if (mobileRef.current) {
+              window.clearTimeout(focusTimerRef.current)
+              focusTimerRef.current = window.setTimeout(() => {
+                if (!focusedRef.current || !ref.current || !mobileRef.current) return
+                lastVvHRef.current = vvHeight()
+                lockedMaxRef.current = lockFocusedBox(ref.current, minHeight)
+                syncCaretOnly()
+                placeOnce(ref.current)
+                placedRef.current = true
+              }, 350)
+            }
             return
           }
         }
@@ -297,12 +324,20 @@ export default function AutoGrowTextarea({
           wasEmpty || pos >= el.value.length - 1 || el.value.length < 8
 
         onFocus?.()
+
+        // Desktop table: grow in place — do NOT scroll the page (placeOnce)
+        if (!mobileRef.current) {
+          growDesktop(el, minHeight)
+          return
+        }
+
+        document.documentElement.classList.add('dp-field-focused')
         lockedMaxRef.current = lockFocusedBox(el, minHeight)
         syncCaretOnly()
 
         window.clearTimeout(focusTimerRef.current)
         focusTimerRef.current = window.setTimeout(() => {
-          if (!focusedRef.current || !ref.current) return
+          if (!focusedRef.current || !ref.current || !mobileRef.current) return
           lastVvHRef.current = vvHeight()
           lockedMaxRef.current = lockFocusedBox(ref.current, minHeight)
           const p = ref.current.selectionEnd ?? ref.current.value.length

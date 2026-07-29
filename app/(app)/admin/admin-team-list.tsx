@@ -30,6 +30,7 @@ interface Props {
     user_id: string
     hide_from_plan?: boolean
     can_edit_tasks?: boolean
+    can_add_photos?: boolean
     can_access_people?: boolean
     notify_email?: boolean
     notify_push?: boolean

@@ -303,19 +303,34 @@ export async function getTeamAccess(
   supabase: Awaited<ReturnType<typeof createClient>>,
   profile: Profile,
   teamId: string
-): Promise<{ canManage: boolean; canEditTasks: boolean }> {
+): Promise<{ canManage: boolean; canEditTasks: boolean; canAddPhotos: boolean }> {
   if (isBoss(profile.role)) {
-    return { canManage: true, canEditTasks: true }
+    const { data } = await supabase
+      .from('team_admins')
+      .select('can_add_photos')
+      .eq('team_id', teamId)
+      .eq('user_id', profile.id)
+      .maybeSingle()
+    return {
+      canManage: true,
+      canEditTasks: true,
+      // Listed on leadership → respect flag; otherwise always allow
+      canAddPhotos: data ? data.can_add_photos !== false : true,
+    }
   }
   if (profile.role !== 'sub_admin') {
-    return { canManage: false, canEditTasks: false }
+    return { canManage: false, canEditTasks: false, canAddPhotos: false }
   }
   const { data } = await supabase
     .from('team_admins')
-    .select('can_edit_tasks')
+    .select('can_edit_tasks, can_add_photos')
     .eq('team_id', teamId)
     .eq('user_id', profile.id)
     .maybeSingle()
-  if (!data) return { canManage: false, canEditTasks: false }
-  return { canManage: true, canEditTasks: data.can_edit_tasks !== false }
+  if (!data) return { canManage: false, canEditTasks: false, canAddPhotos: false }
+  return {
+    canManage: true,
+    canEditTasks: data.can_edit_tasks !== false,
+    canAddPhotos: data.can_add_photos !== false,
+  }
 }

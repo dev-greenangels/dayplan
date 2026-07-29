@@ -72,6 +72,8 @@ interface Props {
   isSubAdmin: boolean
   isSuperAdmin?: boolean
   canEditTasks: boolean
+  /** Leadership may upload photos (existing photos always visible) */
+  canAddPhotos: boolean
   currentUserId: string
   loggedInIds: string[]
   hiddenFromPlanIds: string[]
@@ -148,6 +150,7 @@ export default function TeamPlanBoard({
   isSubAdmin,
   isSuperAdmin = false,
   canEditTasks,
+  canAddPhotos,
   currentUserId,
   loggedInIds,
   hiddenFromPlanIds,
@@ -539,6 +542,22 @@ export default function TeamPlanBoard({
       strip.scrollTo({ left: Math.max(0, left), behavior: 'smooth' })
     }
   }, [date])
+
+  // Sticky on/off changes day button widths (weekday labels) — re-center selected day
+  useEffect(() => {
+    const strip = dayStripRef.current
+    if (!strip) return
+    const center = () => {
+      const el = strip.querySelector<HTMLElement>('[data-selected="true"]')
+      if (!el) return
+      const left = el.offsetLeft - strip.clientWidth / 2 + el.offsetWidth / 2
+      strip.scrollTo({ left: Math.max(0, left), behavior: 'auto' })
+    }
+    // Wait for sticky compact/expanded layout to paint
+    requestAnimationFrame(() => {
+      requestAnimationFrame(center)
+    })
+  }, [monthBarStuck])
 
   const memberDateSet = useMemo(() => new Set(memberPlanDates), [memberPlanDates])
 
@@ -1353,7 +1372,8 @@ export default function TeamPlanBoard({
                                 (c.key === 'planned' || c.key === 'completed') &&
                                 !!row.id &&
                                 canEditField(c.key, row) &&
-                                (c.key === 'completed' || isAdmin)
+                                (c.key === 'completed' || isAdmin) &&
+                                (!isAdmin || canAddPhotos)
                               }
                               canDeletePhoto={
                                 (c.key === 'planned' || c.key === 'completed') &&
@@ -1521,7 +1541,8 @@ export default function TeamPlanBoard({
                                 (c.key === 'planned' || c.key === 'completed') &&
                                 !!row.id &&
                                 canEditField(c.key, row) &&
-                                (c.key === 'completed' || isAdmin)
+                                (c.key === 'completed' || isAdmin) &&
+                                (!isAdmin || canAddPhotos)
                               }
                               canDeletePhoto={
                                 (c.key === 'planned' || c.key === 'completed') &&

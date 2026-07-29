@@ -38,6 +38,7 @@ export default async function TeamPlanPage({ params }: Props) {
   const access = await getTeamAccess(supabase, profile, teamId)
   const isAdmin = access.canManage
   const canEditTasks = access.canEditTasks
+  const canAddPhotos = access.canAddPhotos
 
   if (!isAdmin) {
     const { data: member } = await supabase
@@ -303,6 +304,7 @@ export default async function TeamPlanPage({ params }: Props) {
         isSubAdmin={profile.role === 'sub_admin'}
         isSuperAdmin={profile.role === 'super_admin'}
         canEditTasks={canEditTasks}
+        canAddPhotos={canAddPhotos}
         currentUserId={user.id}
         loggedInIds={loggedInIds}
         hiddenFromPlanIds={hiddenFromPlanIds}
