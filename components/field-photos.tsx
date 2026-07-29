@@ -139,20 +139,33 @@ export default function FieldPhotos({
             <>
               {/* backdrop */}
               <div className="fixed inset-0 z-40" onClick={() => setSourceMenu(false)} />
-              <div className="absolute right-0 bottom-full z-50 mb-1 flex min-w-[150px] flex-col overflow-hidden rounded-lg border border-border bg-white shadow-lg">
+              <div className="absolute right-0 bottom-full z-50 mb-2 flex min-w-[205px] flex-col overflow-hidden rounded-xl border border-border bg-white p-1.5 shadow-xl">
                 <button
                   type="button"
                   onClick={pickCamera}
-                  className="tap-btn px-3 py-2.5 text-left text-xs font-medium hover:bg-muted/50"
+                  className="tap-btn flex min-h-14 items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-semibold hover:bg-muted/60"
                 >
-                  📷 Камера
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 7l1.2-2h6.6l1.2 2H19a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V9a2 2 0 012-2h2.5z" />
+                      <circle cx="12" cy="13" r="3.25" />
+                    </svg>
+                  </span>
+                  Камера
                 </button>
                 <button
                   type="button"
                   onClick={pickGallery}
-                  className="tap-btn px-3 py-2.5 text-left text-xs font-medium hover:bg-muted/50"
+                  className="tap-btn flex min-h-14 items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-semibold hover:bg-muted/60"
                 >
-                  🖼 З галереї
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                      <rect x="3" y="4" width="18" height="16" rx="2" />
+                      <circle cx="9" cy="9" r="1.5" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 17l4.5-4.5 3 3 2.5-2.5 6 5" />
+                    </svg>
+                  </span>
+                  З галереї
                 </button>
               </div>
             </>
